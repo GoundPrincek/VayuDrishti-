@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VayuDrishti - Cyclone Intelligence & Early Warning System</title>
+  <meta name="description" content="VayuDrishti: Cyclone Intelligence & Early Warning Prototype with Intra-Cycle Rapid Intelligence, Near-Coast RI Watch, and Probabilistic 72h Forecast.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  
+  <!-- Styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="brand-section">
+      <div class="logo-badge" title="VayuDrishti Satellite Radar Core">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 2a7 7 0 0 1 7 7c0 5.25-7 13-7 13S5 14.25 5 9a7 7 0 0 1 7-7z"></path>
+          <circle cx="12" cy="9" r="2.5"></circle>
+        </svg>
+      </div>
+
+      <div class="title-group">
+        <h1 class="brand-title">VayuDrishti</h1>
+        <p class="brand-subtitle">METEOROLOGICAL CYCLONE INTELLIGENCE SYSTEM</p>
+      </div>
+
+      <!-- Header Status Badges -->
+      <div class="header-badges">
+        <div class="live-badge">
+          <span class="live-dot"></span>
+          <span>LIVE</span>
+        </div>
+        <div class="update-badge">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          <span>15-MIN UPDATE</span>
+        </div>
+      </div>
+
+      <!-- Active Storm Pill -->
+      <div class="storm-pill" id="stormStatusPill">
+        <span class="pulse-dot" id="statusPulseDot"></span>
+        <strong id="stormName">VSCS 'VAJRA'</strong>
+        <span style="color: var(--text-dim);">|</span>
+        <span id="stormCategory" style="color: var(--text-muted); font-weight: 600;">121 km/h</span>
+        <span style="color: var(--text-dim);">|</span>
+        <span id="cycloneStatusText" style="color: var(--alert-red); font-weight: 700;">Cyclone Status: RAPID INTENSIFICATION</span>
+      </div>
+    </div>
+
+    <!-- Header Controls -->
+    <div class="header-controls">
+      <button id="startDemoBtn" class="demo-start-btn" title="Automated 42-second operational intelligence demonstration">
+        <span class="demo-btn-icon">▶</span>
+        <span id="demoBtnText">START DEMO</span>
+      </button>
+      <span class="badge-tag" id="liveClock">25-SEP 06:45 UTC</span>
+      <select id="scenarioSelector" class="scenario-select" aria-label="Simulation Scenario">
+        <option value="bay_of_bengal">Scenario 1: Bay of Bengal (Explosive Near-Coast RI)</option>
+        <option value="arabian_sea">Scenario 2: Arabian Sea (Curving Coastal Threat)</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Main Dashboard Layout -->
+  <main class="dashboard-shell">
+    <!-- Upper Deck: LEFT / LARGE Map + RIGHT Cyclone Intelligence -->
+    <div class="dashboard-upper">
+      <!-- LEFT / LARGE: Cyclone Map Area -->
+      <section class="map-viewport" aria-label="Cyclone Geospatial Track Map">
+        <div id="cycloneMap"></div>
+
+        <!-- Real-Time Telemetry HUD -->
+        <div class="map-hud-overlay">
+          <div class="hud-card">
+            <div class="hud-title">Storm Telemetry</div>
+            <div class="hud-metric-row">
+              <span class="hud-large-val" id="hudWindSpeed">95</span>
+              <span class="hud-unit">kts</span>
+              <span style="color: var(--text-dim); margin-left: 0.25rem;">(175 km/h)</span>
+            </div>
+            <div class="hud-sub" id="hudCoords">Location: 18.2°N, 86.8°E • Moving NNW at 15 km/h</div>
+            <div class="hud-sub" id="hudPressure">Central Pressure: 958 hPa • Eye Diameter: 18 km</div>
+          </div>
+        </div>
+
+        <!-- AI Objective Center-Fix Panel -->
+        <div class="center-fix-panel" id="centerFixPanel">
+          <div class="cf-header">
+            <div class="cf-ai-badge">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+              AI CENTER FIX
+            </div>
+            <span class="cf-confidence-badge" id="cfConfBadge">94%</span>
+          </div>
+
+          <div class="cf-body">
+            <!-- Center migration visualization -->
+            <div class="cf-migration">
+              <div class="cf-point cf-prev">
+                <span class="cf-dot prev-dot"></span>
+                <div class="cf-point-info">
+                  <span class="cf-point-label">Previous Center</span>
+                  <span class="cf-point-coords" id="cfPrevCoords">17.2°N, 87.2°E</span>
+                </div>
+              </div>
+              <div class="cf-arrow-col">
+                <svg class="cf-arrow-svg" viewBox="0 0 20 32" width="14" height="22">
+                  <path d="M10 2 L10 26 M4 20 L10 28 L16 20" stroke="var(--accent-cyan)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="cf-point cf-curr">
+                <span class="cf-dot curr-dot"></span>
+                <div class="cf-point-info">
+                  <span class="cf-point-label">Current Center</span>
+                  <span class="cf-point-coords" id="cfCurrCoords">18.2°N, 86.8°E</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Confidence bar -->
+            <div class="cf-conf-row">
+              <span class="cf-conf-label">Confidence</span>
+              <div class="cf-conf-track">
+                <div class="cf-conf-fill" id="cfConfFill" style="width: 94%;"></div>
+              </div>
+              <span class="cf-conf-val" id="cfConfVal">94%</span>
+            </div>
+
+            <!-- Movement vector -->
+            <div class="cf-movement-row">
+              <div class="cf-move-item">
+                <span class="cf-move-label">Movement</span>
+                <span class="cf-move-val" id="cfMoveDir">NNW</span>
+              </div>
+              <div class="cf-move-item">
+                <span class="cf-move-label">Displacement</span>
+                <span class="cf-move-val" id="cfDisplacement">128 km</span>
+              </div>
+              <div class="cf-move-item">
+                <span class="cf-move-label">Fix Time</span>
+                <span class="cf-move-val" id="cfFixTime">11:00 UTC</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Map Layer Toggles Floating in Map -->
+        <div class="map-layer-controls">
+          <button id="toggleConeBtn" class="toggle-chip active" title="Toggle 68% & 95% Uncertainty Cones">Cone</button>
+          <button id="togglePastTrackBtn" class="toggle-chip active" title="Toggle Observed Past Track">Past Track</button>
+          <button id="togglePointsBtn" class="toggle-chip active" title="Toggle Forecast Waypoints & Labels">Waypoints</button>
+          <button id="toggleRadiiBtn" class="toggle-chip active" title="Toggle 34/50/64kt Wind Radii">Wind Radii</button>
+          <button id="toggleEnsembleBtn" class="toggle-chip active" title="Toggle Model Ensemble Spaghetti Lines">Ensembles</button>
+          <button id="toggleCoastBtn" class="toggle-chip active" title="Toggle Coastal Hazard Buffer Zone">Coastal Buffer</button>
+          <button id="toggleRiWatchBtn" class="toggle-chip active" title="Toggle Near-Coast RI Watch Visual Connection">RI Watch</button>
+        </div>
+
+        <!-- Map Compass Rose -->
+        <div class="map-compass" title="Storm Heading: 335° NNW @ 15 km/h">
+          <div class="compass-ring">
+            <span class="compass-n">N</span>
+            <div class="compass-needle" id="compassNeedle"></div>
+          </div>
+          <span class="compass-label" id="compassLabel">335° NNW</span>
+        </div>
+
+        <!-- Cyclone Track Movement & Simulation Scrubber Bar -->
+        <div class="map-track-bar" id="mapTrackBar">
+          <div class="track-bar-left">
+            <button id="playBtn" class="track-btn play-btn" title="Simulate Cyclone Movement along Forecast Track">▶ Play</button>
+            <button id="prevHourBtn" class="track-btn icon-btn" title="Previous Forecast Step">⏮</button>
+            <button id="nextHourBtn" class="track-btn icon-btn" title="Next Forecast Step">⏭</button>
+            <button id="resetTrackBtn" class="track-btn text-btn" title="Reset to Current Live Position">NOW</button>
+          </div>
+
+          <div class="track-bar-slider-wrap">
+            <div class="slider-header">
+              <span class="slider-title">Forecast Track Progression:</span>
+              <span id="forecastTimeTag" class="forecast-tag now">T+0h (NOW: 11:00 UTC)</span>
+              <span id="forecastDistanceTag" class="distance-tag">172 km to coast</span>
+            </div>
+            <input type="range" id="timeSlider" min="0" max="72" step="6" value="0" aria-label="Forecast Track Scrubber">
+            <div class="slider-ticks timeline-labels">
+              <span class="tick active-tick" id="tick-0" data-hour="0">0h (Now)</span>
+              <span class="tick" id="tick-6" data-hour="6">+6h</span>
+              <span class="tick" id="tick-12" data-hour="12">+12h</span>
+              <span class="tick" id="tick-18" data-hour="18">+18h</span>
+              <span class="tick landfall-tick" id="tick-24" data-hour="24">+24h Landfall</span>
+              <span class="tick" id="tick-36" data-hour="36">+36h</span>
+              <span class="tick" id="tick-48" data-hour="48">+48h</span>
+              <span class="tick" id="tick-72" data-hour="72">+72h</span>
+            </div>
+          </div>
+
+          <div class="track-bar-right">
+            <button id="recenterMapBtn" class="track-btn icon-btn" title="Recenter Map on Cyclone Center">⌖ Recenter</button>
+          </div>
+        </div>
+
+        <!-- Map Legend -->
+        <div class="map-legend">
+          <div class="legend-header">Map Layers</div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #38bdf8; box-shadow: 0 0 6px rgba(56, 189, 248, 0.6);"></span>
+            <span>Coastline & Land</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #f43f5e; border-radius: 50%; box-shadow: 0 0 6px #f43f5e;"></span>
+            <span>Current Eye (Active)</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #94a3b8; border-bottom: 2px dashed #94a3b8;"></span>
+            <span>Observed Track (Past)</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: var(--accent-cyan); height: 3px; box-shadow: 0 0 6px var(--accent-cyan);"></span>
+            <span>Consensus Forecast</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: rgba(0, 242, 254, 0.25); border: 1px dashed var(--accent-cyan);"></span>
+            <span>Uncertainty Cone</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: rgba(244, 63, 94, 0.35); border: 1px dashed var(--alert-red);"></span>
+            <span>Coastal Hazard Buffer</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: rgba(244, 63, 94, 0.5); border: 2px dashed #f43f5e; box-shadow: 0 0 6px rgba(244, 63, 94, 0.8);"></span>
+            <span>Near-Coast RI Watch (Hazard Ray)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: Cyclone Intelligence Panel -->
+      <aside class="intel-panel" aria-label="Cyclone Intelligence Panel">
+        <div class="intel-panel-header">
+          <div>
+            <h2 class="intel-panel-title">Cyclone Intelligence</h2>
+            <p class="intel-panel-subtitle">Multi-Source Satellite & Core Diagnostic</p>
+          </div>
+          <span class="badge-tag intel-active-tag">AI CORE ACTIVE</span>
+        </div>
+
+        <div class="intel-panel-body">
+          <!-- Multi-Source Satellite Observation Panel -->
+          <div class="sat-obs-panel">
+            <div class="sat-obs-header">
+              <div class="sat-obs-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a7 7 0 0 1 7 7c0 5.25-7 13-7 13S5 14.25 5 9a7 7 0 0 1 7-7z"></path></svg>
+                <span>MULTI-SOURCE SATELLITE OBSERVATION</span>
+              </div>
+              <span class="sat-live-indicator">● LIVE SYNC</span>
+            </div>
+
+            <!-- 3 Selectable Source Tabs / Cards -->
+            <div class="sat-source-tabs" role="tablist" aria-label="Satellite Observation Sources">
+              <!-- Tab 1: INSAT-3DS -->
+              <button class="sat-tab-card active" id="tabInsat" data-source="insat" role="tab" aria-selected="true" title="INSAT-3DS Geostationary Imager">
+                <div class="tab-top">
+                  <span class="tab-source-name">INSAT-3DS</span>
+                  <span class="tab-time">11:00</span>
+                </div>
+                <div class="tab-feature">Cloud structure</div>
+                <div class="tab-type">IR observation</div>
+              </button>
+
+              <!-- Tab 2: Polar Microwave -->
+              <button class="sat-tab-card" id="tabMicrowave" data-source="microwave" role="tab" aria-selected="false" title="Polar Orbiting Microwave Sounder">
+                <div class="tab-top">
+                  <span class="tab-source-name">Polar Microwave</span>
+                  <span class="tab-time">10:45</span>
+                </div>
+                <div class="tab-feature">Low-level cyclone structure</div>
+                <div class="tab-type">89 GHz</div>
+              </button>
+
+              <!-- Tab 3: OSCAT Surface Winds -->
+              <button class="sat-tab-card" id="tabOscat" data-source="oscat" role="tab" aria-selected="false" title="Oceansat Scatterometer Wind Vectors">
+                <div class="tab-top">
+                  <span class="tab-source-name">OSCAT</span>
+                  <span class="tab-time">10:30</span>
+                </div>
+                <div class="tab-feature">Surface wind</div>
+                <div class="tab-type">Wind vectors</div>
+              </button>
+            </div>
+
+            <!-- Dynamic Observation Detail View -->
+            <div class="sat-obs-detail-card" id="satObsDetailCard">
+              <div class="sod-header">
+                <div class="sod-title-row">
+                  <span class="sod-badge" id="sodSourceBadge">INSAT-3DS</span>
+                  <span class="sod-feature-label" id="sodFeatureLabel">Cloud structure</span>
+                </div>
+                <span class="sod-time-tag" id="sodTimeTag">11:00 UTC (Latest)</span>
+              </div>
+
+              <div class="sod-grid">
+                <div class="sod-metric">
+                  <span class="sod-lbl">Sensor & Modality:</span>
+                  <strong class="sod-val" id="sodSensorVal">IR observation (TIR-1 / 10.8 µm)</strong>
+                </div>
+                <div class="sod-metric">
+                  <span class="sod-lbl">Primary Observation:</span>
+                  <strong class="sod-val text-cyan" id="sodTargetVal">Central Dense Overcast (CDO)</strong>
+                </div>
+                <div class="sod-metric">
+                  <span class="sod-lbl">Core Diagnostic:</span>
+                  <strong class="sod-val text-red" id="sodDiagVal">-84.2°C Eyewall Cloud Tops</strong>
+                </div>
+                <div class="sod-metric">
+                  <span class="sod-lbl">Resolution & Status:</span>
+                  <span class="sod-val" id="sodResVal">4 km • Ingested & Calibrated</span>
+                </div>
+              </div>
+
+              <div class="sod-footer-note" id="sodNote">
+                Geostationary infrared thermal imaging highlights rapid convective deepening and symmetrical CDO canopy over Bay of Bengal.
+              </div>
+            </div>
+          </div>
+
+          <!-- Physics-Guided RI Predictor Panel (Simulated Scoring Layer) -->
+          <div class="intel-section-title" style="margin-top: 0.65rem;">Physics-Guided RI Predictor</div>
+          <div class="pg-predictor-panel" id="pgPredictorPanel">
+            <div class="pg-header">
+              <div class="pg-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span>PHYSICS-GUIDED RI PREDICTOR</span>
+              </div>
+              <span class="pg-proto-badge">SIMULATED SCORING</span>
+            </div>
+
+            <!-- Parameters Grid: 6 Physical Factors -->
+            <div class="pg-factors-grid">
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Intensity Trend</span>
+                <strong class="pg-factor-val text-red" id="pgValTrend">+39 km/h</strong>
+              </div>
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Ocean Heat Content</span>
+                <strong class="pg-factor-val text-cyan" id="pgValOhc">82 kJ/cm²</strong>
+              </div>
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Wind Shear</span>
+                <strong class="pg-factor-val text-green" id="pgValShear">9 kt</strong>
+              </div>
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Pressure Trend</span>
+                <strong class="pg-factor-val text-red" id="pgValPressure">-18 hPa</strong>
+              </div>
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Distance to Coast</span>
+                <strong class="pg-factor-val text-yellow" id="pgValCoast">85 km</strong>
+              </div>
+              <div class="pg-factor-item">
+                <span class="pg-factor-lbl">Current Wind Speed</span>
+                <strong class="pg-factor-val" id="pgValWind">121 km/h</strong>
+              </div>
+            </div>
+
+            <!-- RI Output & Score -->
+            <div class="pg-score-card">
+              <div class="pg-score-top">
+                <div class="pg-prob-col">
+                  <span class="pg-prob-lbl">RI Probability</span>
+                  <strong class="pg-prob-val" id="pgProbVal">82%</strong>
+                </div>
+                <div class="pg-status-col">
+                  <span class="pg-status-badge active-ri" id="pgStatusBadge">RAPID INTENSIFICATION</span>
+                </div>
+              </div>
+              <!-- Transparent Risk Score Breakdown -->
+              <div class="pg-calc-summary">
+                <div class="pg-calc-bar-wrap">
+                  <div class="pg-calc-bar" id="pgCalcBar" style="width: 82%;"></div>
+                </div>
+                <span class="pg-calc-formula" id="pgCalcFormula">RI Risk Score: 82/100 (Threshold &gt; 70)</span>
+              </div>
+            </div>
+
+            <!-- Proposed AI Architecture Pipeline (Visual Representation) -->
+            <div class="pg-pipeline-box">
+              <div class="pg-pipeline-header">
+                <span class="pg-pipeline-title">AI MODEL PIPELINE</span>
+                <span class="pg-model-status-tag">Model Status: <strong>SIMULATED PROTOTYPE</strong></span>
+              </div>
+              <div class="pg-pipeline-flow">
+                <div class="pg-pipe-node">Multi-Source Satellite Data</div>
+                <div class="pg-pipe-arrow">↓</div>
+                <div class="pg-pipe-node">Spatio-Temporal Features</div>
+                <div class="pg-pipe-arrow">↓</div>
+                <div class="pg-pipe-node pg-pipe-highlight">ConvLSTM / Deep Learning</div>
+                <div class="pg-pipe-arrow">↓</div>
+                <div class="pg-pipe-node">Physics-Guided Constraints</div>
+                <div class="pg-pipe-arrow">↓</div>
+                <div class="pg-pipe-node pg-pipe-result">RI Probability</div>
+              </div>
+            </div>
+
+            <div class="pg-disclaimer">
+              <span class="pg-disclaimer-dot">ℹ</span>
+              <span>Visual representation of proposed AI architecture. Transparent scoring prototype based on physical tensors (ConvLSTM not trained).</span>
+            </div>
+          </div>
+
+          <!-- Rapid Divergence Alert Box -->
+          <div class="intel-section-title" style="margin-top: 0.65rem;">Interim Advisory Status</div>
+          <div class="rapid-alert-box">
+            <div class="alert-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+              EARLY DIVERGENCE DETECTED
+            </div>
+            <p id="rapidAlertText">Core cooling indicates storm is deepening 1.8x faster than scheduled 06:00 UTC bulletin forecast. Pre-advisory trigger activated.</p>
+          </div>
+
+          <!-- Official Bulletin Cycle Status -->
+          <div class="bulletin-sync-card">
+            <div class="bulletin-sync-row">
+              <span style="color: var(--text-muted); font-size: 0.72rem;">Last Official Bulletin:</span>
+              <strong style="font-family: var(--font-mono); font-size: 0.75rem; color: #ffffff;">06:00 UTC (IMD #08)</strong>
+            </div>
+            <div class="bulletin-sync-row">
+              <span style="color: var(--text-muted); font-size: 0.72rem;">Next Official Bulletin:</span>
+              <strong style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--accent-cyan);">09:00 UTC (in 2h 15m)</strong>
+            </div>
+            <div class="bulletin-sync-note">
+              VayuDrishti interim scan detected +10 kt intensification ahead of schedule.
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- FLOW PIPELINE CONNECTOR: Satellite → 15min Obs → Center Fix → RI → RI Watch → Forecast -->
+    <div class="flow-pipeline-bar" aria-label="Intelligence Flow Pipeline">
+      <div class="flow-pipeline-inner">
+        <div class="flow-node flow-node-done" id="flowNodeSat" title="Multi-Source Satellite Observation">
+          <span class="flow-step-num">01</span>
+          <span class="flow-node-label">Satellite Obs</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-node-done" id="flowNodeObs" title="15-Minute Intra-Cycle Rapid Intel">
+          <span class="flow-step-num">02</span>
+          <span class="flow-node-label">15-Min Intel</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-node-done" id="flowNodeCF" title="AI Objective Center Fix">
+          <span class="flow-step-num">03</span>
+          <span class="flow-node-label">Center Fix</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-node-done" id="flowNodeRI" title="Rapid Intensification Detection">
+          <span class="flow-step-num">04</span>
+          <span class="flow-node-label">RI Detection</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-node-done" id="flowNodeRIW" title="Near-Coast RI Watch">
+          <span class="flow-step-num">05</span>
+          <span class="flow-node-label">RI Watch</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-node-active" id="flowNodeFC" title="Probabilistic 0–72h Forecast">
+          <span class="flow-step-num">06</span>
+          <span class="flow-node-label">0–72h Forecast</span>
+        </div>
+        <div class="flow-status-sep"></div>
+        <span class="flow-status-label" id="flowStatusLabel">LIVE • All systems nominal</span>
+      </div>
+    </div>
+
+    <!-- BOTTOM DECK: 15-Minute Timeline | Near-Coast RI Watch | 72h Forecast -->
+    <div class="dashboard-bottom">
+      <!-- BOTTOM CARD 1: 15-Minute Observation Timeline -->
+      <article class="bottom-card obs-timeline-card">
+        <div class="bottom-card-header">
+          <div class="bottom-card-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-purple)" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            <span>15-Minute Observation Timeline</span>
+          </div>
+          <div class="obs-header-controls">
+            <button id="obsPlayBtn" class="obs-play-toggle-btn" title="Auto-advance observations">▶ Play</button>
+            <span class="card-mini-tag purple">RAPID INTEL</span>
+          </div>
+        </div>
+
+        <!-- Timeline Visualization (T-60 to NOW) -->
+        <div class="obs-timeline-viz" id="obsTimelineViz">
+          <div class="timeline-step-node" data-step="0">
+            <span class="node-time">T-60</span>
+            <span class="node-dot"></span>
+            <span class="node-wind">82 km/h</span>
+          </div>
+          <div class="timeline-step-node" data-step="1">
+            <span class="node-time">T-45</span>
+            <span class="node-dot"></span>
+            <span class="node-wind">89 km/h</span>
+          </div>
+          <div class="timeline-step-node" data-step="2">
+            <span class="node-time">T-30</span>
+            <span class="node-dot"></span>
+            <span class="node-wind">97 km/h</span>
+          </div>
+          <div class="timeline-step-node" data-step="3">
+            <span class="node-time">T-15</span>
+            <span class="node-dot"></span>
+            <span class="node-wind">108 km/h</span>
+          </div>
+          <div class="timeline-step-node active" data-step="4">
+            <span class="node-time">NOW</span>
+            <span class="node-dot"></span>
+            <span class="node-wind">121 km/h</span>
+          </div>
+          <div class="timeline-track-line">
+            <div class="timeline-progress-fill" id="obsProgressFill" style="width: 100%;"></div>
+          </div>
+        </div>
+
+        <!-- Current Observation Panel -->
+        <div class="current-obs-panel">
+          <div class="obs-main-row">
+            <div class="obs-stat">
+              <span class="obs-stat-label">Obs Time</span>
+              <strong class="obs-stat-value" id="currentObsTime">NOW (11:00)</strong>
+            </div>
+            <div class="obs-stat">
+              <span class="obs-stat-label">Wind Speed</span>
+              <strong class="obs-stat-value highlight-cyan" id="currentObsWind">121 km/h</strong>
+            </div>
+            <div class="obs-stat">
+              <span class="obs-stat-label">Pressure</span>
+              <strong class="obs-stat-value" id="currentObsPressure">972 hPa</strong>
+            </div>
+            <div class="obs-stat">
+              <span class="obs-stat-label">Intensity Change</span>
+              <strong class="obs-stat-value highlight-red" id="currentObsChange">+13 km/h (+12%)</strong>
+            </div>
+          </div>
+          <div class="obs-status-note" id="currentObsNote">
+            EXPLOSIVE RI: +39 km/h surge and -18 hPa in 60 min near coast!
+          </div>
+        </div>
+
+        <!-- Mini Intensity + Pressure Sparkline Chart -->
+        <div class="mini-chart-wrap">
+          <div class="mini-chart-header">
+            <span class="mini-chart-title">Intensity Trend (Last 60 min)</span>
+            <div class="mini-chart-legend">
+              <span><span class="mini-legend-dot" style="background:var(--accent-cyan)"></span>Wind km/h</span>
+              <span><span class="mini-legend-dot" style="background:var(--alert-orange)"></span>Pressure hPa</span>
+            </div>
+          </div>
+          <svg id="obsIntensityChart" class="mini-svg-chart" viewBox="0 0 280 56" preserveAspectRatio="none">
+            <!-- Gridlines -->
+            <line x1="28" y1="8"  x2="275" y2="8"  stroke="#1e293b" stroke-width="0.8"/>
+            <line x1="28" y1="22" x2="275" y2="22" stroke="#1e293b" stroke-width="0.8"/>
+            <line x1="28" y1="36" x2="275" y2="36" stroke="#1e293b" stroke-width="0.8"/>
+            <line x1="28" y1="50" x2="275" y2="50" stroke="#1e293b" stroke-width="0.8"/>
+            <!-- Y labels -->
+            <text x="0" y="11"  fill="#475569" font-size="6.5" font-family="monospace">160</text>
+            <text x="0" y="25"  fill="#475569" font-size="6.5" font-family="monospace">130</text>
+            <text x="0" y="39"  fill="#475569" font-size="6.5" font-family="monospace">100</text>
+            <text x="0" y="53"  fill="#475569" font-size="6.5" font-family="monospace"> 80</text>
+            <!-- X axis labels -->
+            <text x="28"  y="56" fill="#475569" font-size="6" font-family="monospace" text-anchor="middle">T-60</text>
+            <text x="87"  y="56" fill="#475569" font-size="6" font-family="monospace" text-anchor="middle">T-45</text>
+            <text x="146" y="56" fill="#475569" font-size="6" font-family="monospace" text-anchor="middle">T-30</text>
+            <text x="205" y="56" fill="#475569" font-size="6" font-family="monospace" text-anchor="middle">T-15</text>
+            <text x="264" y="56" fill="#475569" font-size="6" font-family="monospace" text-anchor="middle">NOW</text>
+            <!-- Wind area fill -->
+            <path id="obsWindArea" fill="rgba(0,242,254,0.08)" d=""/>
+            <!-- Wind line (cyan) -->
+            <path id="obsWindLine" fill="none" stroke="var(--accent-cyan)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d=""/>
+            <!-- Pressure line (orange) -->
+            <path id="obsPressureLine" fill="none" stroke="var(--alert-orange)" stroke-width="1.5" stroke-dasharray="3,2" stroke-linecap="round" stroke-linejoin="round" d=""/>
+            <!-- Data point dots (wind) -->
+            <g id="obsWindDots"></g>
+            <!-- Active cursor -->
+            <line id="obsChartCursor" x1="264" y1="4" x2="264" y2="50" stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="2,2"/>
+          </svg>
+        </div>
+      </article>
+
+      <!-- BOTTOM CARD 2: Near-Coast RI Watch -->
+      <article class="bottom-card" id="nearCoastRiCard">
+        <div class="bottom-card-header">
+          <div class="bottom-card-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--alert-red)" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span style="font-weight: 700; letter-spacing: 0.5px;">NEAR-COAST RI WATCH</span>
+          </div>
+          <span class="card-mini-tag red" id="riRiskBadge" style="font-weight: 700; letter-spacing: 0.5px;">Risk: HIGH</span>
+        </div>
+
+        <!-- Prominent RI Warning Indicator Banner -->
+        <div class="ri-prominent-banner ri-warning-active" id="riProminentBanner">
+          <div class="ri-banner-header">
+            <span class="ri-banner-icon" id="riBannerIcon">⚠️</span>
+            <div class="ri-banner-text-group">
+              <span class="ri-banner-title" id="riBannerTitle">NEAR-COAST RI WATCH ACTIVE</span>
+              <span class="ri-banner-sub" id="riBannerSub">Near-shore thermal coupling & favorable shear driving rapid spin-up</span>
+            </div>
+            <div class="ri-risk-flag">
+              <span class="ri-risk-sub">Current Risk</span>
+              <strong class="ri-risk-status" id="riRiskStatusText">HIGH</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prototype Risk Calculation Formula Visual -->
+        <div class="ri-calc-panel">
+          <div class="ri-calc-header">
+            <span class="ri-calc-title">Prototype Risk Calculation</span>
+            <span class="ri-calc-verdict" id="riCalcVerdict">All 3 Triggers Met (High RI Risk)</span>
+          </div>
+          <div class="ri-formula-grid">
+            <div class="formula-node factor-active" id="calcNodeOhc" title="Ocean Heat Content: 82 kJ/cm² (Threshold > 60)">
+              <span class="node-factor">High ocean heat</span>
+              <strong class="node-val" id="calcValOhc">82 kJ/cm²</strong>
+              <span class="node-status">✓ Exceeds 60 kJ</span>
+            </div>
+            <span class="formula-operator">+</span>
+            <div class="formula-node factor-active" id="calcNodeShear" title="Wind Shear: 9 kt (Threshold < 15)">
+              <span class="node-factor">Low wind shear</span>
+              <strong class="node-val" id="calcValShear">9 kt</strong>
+              <span class="node-status">✓ Favorable &lt; 15 kt</span>
+            </div>
+            <span class="formula-operator">+</span>
+            <div class="formula-node factor-active" id="calcNodeCoast" title="Distance to Coast: 85 km (Threshold < 150)">
+              <span class="node-factor">Close to coast</span>
+              <strong class="node-val" id="calcValCoast">85 km</strong>
+              <span class="node-status">✓ Critical &lt; 150 km</span>
+            </div>
+            <span class="formula-operator">=</span>
+            <div class="formula-node result-node active-high" id="calcNodeResult">
+              <span class="node-factor">RI Output</span>
+              <strong class="node-val text-red" id="calcResultLabel">High RI Risk</strong>
+              <span class="node-badge" id="calcBadgeText">TRIGGERED</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Environmental Factors Section -->
+        <div class="ri-env-section">
+          <div class="ri-env-header">
+            <span>Environmental Factors</span>
+            <span class="env-sync-tag" id="envSyncTag">Multi-Source Satellite Radar Sync</span>
+          </div>
+          <div class="ri-env-grid">
+            <!-- Ocean Heat Content -->
+            <div class="env-item">
+              <div class="env-item-header">
+                <span class="env-label">Ocean Heat Content</span>
+                <span class="env-tag tag-high" id="tagOhc">HIGH</span>
+              </div>
+              <div class="env-item-body">
+                <span class="env-num" id="tensorOhc">82 kJ/cm²</span>
+                <span class="env-thresh">Thresh: &gt;60 kJ/cm²</span>
+              </div>
+              <div class="env-bar">
+                <div class="env-bar-fill bar-red" id="barOhc" style="width: 82%;"></div>
+              </div>
+            </div>
+
+            <!-- Wind Shear -->
+            <div class="env-item">
+              <div class="env-item-header">
+                <span class="env-label">Wind Shear</span>
+                <span class="env-tag tag-fav" id="tagShear">LOW SHEAR</span>
+              </div>
+              <div class="env-item-body">
+                <span class="env-num" id="tensorVws">9 kt</span>
+                <span class="env-thresh">Thresh: &lt;15 kt (Fav)</span>
+              </div>
+              <div class="env-bar">
+                <div class="env-bar-fill bar-green" id="barShear" style="width: 30%;"></div>
+              </div>
+            </div>
+
+            <!-- Distance to Coast -->
+            <div class="env-item">
+              <div class="env-item-header">
+                <span class="env-label">Distance to Coast</span>
+                <span class="env-tag tag-danger" id="tagCoast">STRIKE ZONE</span>
+              </div>
+              <div class="env-item-body">
+                <span class="env-num" id="tensorCoast">85 km</span>
+                <span class="env-thresh">Buffer: 150 km</span>
+              </div>
+              <div class="env-bar">
+                <div class="env-bar-fill bar-orange" id="barCoast" style="width: 85%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- BOTTOM CARD 3: 72h Forecast -->
+      <article class="bottom-card" id="forecast72Card">
+        <div class="bottom-card-header">
+          <div class="bottom-card-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2.5"><path d="M3 3v18h18"></path><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"></path></svg>
+            <span style="font-weight: 700; letter-spacing: 0.5px;">0–72H PROBABILISTIC FORECAST</span>
+          </div>
+          <span class="card-mini-tag cyan" id="forecastConeTag">UNCERTAINTY CONE</span>
+        </div>
+
+        <!-- 0-72h Forecast Point Selector Chips -->
+        <div class="forecast-pts-row" id="forecastPtsRow">
+          <button class="fc-pt-chip active" data-hour="0" id="chip-0" title="Click to inspect 0h forecast point">
+            <span class="chip-hour">0h</span>
+            <span class="chip-wind">125 km/h</span>
+            <span class="chip-conf">94%</span>
+          </button>
+          <button class="fc-pt-chip" data-hour="12" id="chip-12" title="Click to inspect 12h forecast point">
+            <span class="chip-hour">12h</span>
+            <span class="chip-wind">132 km/h</span>
+            <span class="chip-conf">86%</span>
+          </button>
+          <button class="fc-pt-chip" data-hour="24" id="chip-24" title="Click to inspect 24h forecast point">
+            <span class="chip-hour">24h</span>
+            <span class="chip-wind">140 km/h</span>
+            <span class="chip-conf">78%</span>
+          </button>
+          <button class="fc-pt-chip" data-hour="48" id="chip-48" title="Click to inspect 48h forecast point">
+            <span class="chip-hour">48h</span>
+            <span class="chip-wind">148 km/h</span>
+            <span class="chip-conf">69%</span>
+          </button>
+          <button class="fc-pt-chip" data-hour="72" id="chip-72" title="Click to inspect 72h forecast point">
+            <span class="chip-hour">72h</span>
+            <span class="chip-wind">155 km/h</span>
+            <span class="chip-conf">61%</span>
+          </button>
+        </div>
+
+        <!-- Selected Forecast Point Detailed Inspection Box -->
+        <div class="forecast-inspect-card" id="forecastInspectCard">
+          <div class="fi-header">
+            <div class="fi-title-col">
+              <span class="fi-hour-badge" id="fiHourTitle">24 HOURS</span>
+              <span class="fi-time-sub" id="fiForecastTime">T+24h (Tomorrow 11:00 UTC)</span>
+            </div>
+            <div class="fi-conf-pill" id="fiConfPill">
+              <span class="fi-conf-label">Confidence:</span>
+              <strong class="fi-conf-num" id="fiConfidenceVal">78%</strong>
+            </div>
+          </div>
+
+          <div class="fi-metrics-grid">
+            <div class="fi-metric-item">
+              <span class="fi-metric-label">Wind Speed</span>
+              <strong class="fi-metric-val text-red" id="fiWindSpeed">140 km/h</strong>
+              <span class="fi-metric-sub" id="fiWindKts">(76 kts)</span>
+            </div>
+            <div class="fi-metric-item">
+              <span class="fi-metric-label">Confidence</span>
+              <strong class="fi-metric-val text-cyan" id="fiConfidence">78%</strong>
+              <span class="fi-metric-sub" id="fiConfBarWrap">
+                <span class="fi-conf-bar" id="fiConfBar" style="width: 78%;"></span>
+              </span>
+            </div>
+            <div class="fi-metric-item">
+              <span class="fi-metric-label">Uncertainty Cone</span>
+              <strong class="fi-metric-val text-yellow" id="fiConeWidth">±65 km</strong>
+              <span class="fi-metric-sub">68% / 95% Envelope</span>
+            </div>
+            <div class="fi-metric-item">
+              <span class="fi-metric-label">Status</span>
+              <strong class="fi-metric-val" id="fiStatusText">Direct Landfall</strong>
+              <span class="fi-metric-sub" id="fiImpactZone">Puri Sector</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Intensity Probability Curve Chart with Uncertainty Shading -->
+        <div class="prob-chart-box">
+          <div class="prob-chart-header">
+            <span style="font-weight: 600; color: var(--text-main);" id="chartHeaderText">Forecast Peak: 155 km/h (61% Conf)</span>
+            <div class="chart-legend">
+              <span><span class="chart-indicator" style="background: var(--alert-red);"></span>P90</span>
+              <span><span class="chart-indicator" style="background: var(--accent-cyan);"></span>P50</span>
+              <span><span class="chart-indicator" style="background: var(--alert-green);"></span>P10</span>
+            </div>
+          </div>
+          <svg class="svg-chart" id="intensityChart" viewBox="0 0 360 70">
+            <!-- Gridlines -->
+            <line x1="30" y1="58" x2="350" y2="58" stroke="#1e293b" stroke-width="1" />
+            <line x1="30" y1="36" x2="350" y2="36" stroke="#1e293b" stroke-width="1" />
+            <line x1="30" y1="14" x2="350" y2="14" stroke="#1e293b" stroke-width="1" />
+            <!-- Y-axis labels -->
+            <text x="0" y="60" fill="#64748b" font-size="8" font-family="monospace">100k</text>
+            <text x="0" y="38" fill="#64748b" font-size="8" font-family="monospace">130k</text>
+            <text x="0" y="16" fill="#64748b" font-size="8" font-family="monospace">160k</text>
+            <!-- Uncertainty Shading between P90 and P10 -->
+            <path id="chartAreaPath" fill="rgba(0, 242, 254, 0.12)" d="M 40,43 L 95,36 L 150,22 L 205,18 L 260,35 L 340,58 L 340,68 L 260,52 L 205,38 L 150,42 L 95,48 L 40,45 Z" />
+            <!-- P90 Worst Case Line (Red) -->
+            <path id="chartP90" fill="none" stroke="var(--alert-red)" stroke-width="1.8" stroke-dasharray="3,2" d="M 40,43 L 95,36 L 150,22 L 205,18 L 260,35 L 340,58" />
+            <!-- P50 Median Consensus (Cyan) -->
+            <path id="chartP50" fill="none" stroke="var(--accent-cyan)" stroke-width="2.2" d="M 40,44 L 95,41 L 150,30 L 205,28 L 260,44 L 340,63" />
+            <!-- P10 Weakening (Green) -->
+            <path id="chartP10" fill="none" stroke="var(--alert-green)" stroke-width="1.5" d="M 40,45 L 95,48 L 150,42 L 205,38 L 260,52 L 340,68" />
+            <!-- Current Time Indicator -->
+            <line id="chartCursor" x1="40" y1="8" x2="40" y2="58" stroke="#ffffff" stroke-width="1.5" />
+          </svg>
+        </div>
+
+        <!-- Forecast Intensity Bar Chart (0h→72h) -->
+        <div class="mini-chart-wrap" style="margin-top: 0.5rem;">
+          <div class="mini-chart-header">
+            <span class="mini-chart-title">Forecast Wind Intensity (km/h)</span>
+            <span class="mini-chart-title" style="color: var(--alert-orange);">▲ Confidence %</span>
+          </div>
+          <svg id="fcBarChart" class="mini-svg-chart" viewBox="0 0 280 60" preserveAspectRatio="none">
+            <!-- Gridlines -->
+            <line x1="28" y1="8"  x2="275" y2="8"  stroke="#1e293b" stroke-width="0.8"/>
+            <line x1="28" y1="24" x2="275" y2="24" stroke="#1e293b" stroke-width="0.8"/>
+            <line x1="28" y1="40" x2="275" y2="40" stroke="#1e293b" stroke-width="0.8"/>
+            <!-- Y labels -->
+            <text x="0" y="10"  fill="#475569" font-size="6.5" font-family="monospace">160</text>
+            <text x="0" y="26"  fill="#475569" font-size="6.5" font-family="monospace">140</text>
+            <text x="0" y="42"  fill="#475569" font-size="6.5" font-family="monospace">120</text>
+            <!-- Dynamic bars + confidence dots rendered by JS -->
+            <g id="fcBars"></g>
+            <g id="fcConfLine"></g>
+            <!-- X-axis tick labels rendered by JS -->
+            <g id="fcXLabels"></g>
+            <!-- Active cursor -->
+            <line id="fcCursor" x1="28" y1="4" x2="28" y2="48" stroke="rgba(255,255,255,0.4)" stroke-width="1" stroke-dasharray="2,2"/>
+          </svg>
+        </div>
+
+        <!-- Coastal Strike Sectors -->
+        <div class="landfall-container">
+          <div class="landfall-header-row">
+            <span>Landfall Sector Probability</span>
+            <span id="landfallEta" style="color: var(--accent-cyan); font-weight: 600;">Landfall: T+24h (Puri Coast)</span>
+          </div>
+          <div class="landfall-sectors-list" id="landfallSectors">
+            <!-- Dynamically populated by JS -->
+          </div>
+        </div>
+      </article>
+    </div>
+  </main>
+
+  <!-- Footer Status Bar -->
+  <footer class="footer-banner">
+    <div class="status-online">MULTI-SOURCE SATELLITE INGESTION: OPERATIONAL (INSAT-3DR / METEOSAT / DMSP)</div>
+    <div>VAYUDRISHTI CYCLONE RADAR SHELL v1.1.0-PROTOTYPE</div>
+  </footer>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- Cyclone Mock Data Layer -->
+  <script src="cycloneData.js"></script>
+  <!-- Application JS -->
+  <script src="app.js"></script>
+</body>
+</html>

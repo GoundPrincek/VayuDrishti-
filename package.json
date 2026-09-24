@@ -1,0 +1,13 @@
+{
+  "name": "vayudrishti",
+  "version": "1.0.0",
+  "description": "VayuDrishti - Cyclone Geospatial Track & Objective Center-Fix Intelligence",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx -y serve -l 8085 .",
+    "dev": "npx -y serve -l 8085 ."
+  },
+  "keywords": ["cyclone", "gis", "leaflet", "center-fix"],
+  "author": "",
+  "license": "ISC"
+}
