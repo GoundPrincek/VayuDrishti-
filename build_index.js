@@ -1,4 +1,10 @@
-<!DOCTYPE html>
+const fs = require('fs');
+const path = require('path');
+
+const rootDir = process.cwd();
+
+// Let's create the clean index.html
+const indexHtmlContent = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -122,18 +128,6 @@
 
             <div class="dash-map-wrapper">
               <div id="cycloneMap"></div>
-
-
-              <!-- Map Layer Toggles -->
-              <div class="map-layer-controls">
-                <button id="toggleConeBtn" class="toggle-chip active" title="Toggle 68% & 95% Uncertainty Cones">Cone</button>
-                <button id="togglePastTrackBtn" class="toggle-chip active" title="Toggle Observed Past Track">Past Track</button>
-                <button id="togglePointsBtn" class="toggle-chip active" title="Toggle Forecast Waypoints">Waypoints</button>
-                <button id="toggleRadiiBtn" class="toggle-chip active" title="Toggle 34/50/64kt Wind Radii">Wind Radii</button>
-                <button id="toggleEnsembleBtn" class="toggle-chip active" title="Toggle Ensemble Lines">Ensembles</button>
-                <button id="toggleCoastBtn" class="toggle-chip active" title="Toggle Coastal Buffer">Coastal Buffer</button>
-                <button id="toggleRiWatchBtn" class="toggle-chip active" title="Toggle RI Watch">RI Watch</button>
-              </div>
 
               <!-- Map Wind Radii Legend -->
               <div class="map-radii-legend" id="mapRadiiLegend">
@@ -924,145 +918,7 @@
 
 </div>
 
-
-  <!-- Hidden compatibility elements for app.js selectors -->
-  <div style="display:none;" aria-hidden="true">
-    <span id="landfallEta"></span>
-    <span id="stormStatusPill"></span>
-    <span id="statusPulseDot"></span>
-    <span id="cycloneStatusText"></span>
-    <span id="stormName"></span>
-    <span id="stormCategory"></span>
-    <span id="compassNeedle"></span>
-    <span id="compassLabel"></span>
-    <!-- obs chart elements (used in simulation page) -->
-    <svg style="position:absolute;width:0;height:0;overflow:hidden">
-      <path id="obsWindLine" />
-      <path id="obsWindArea" />
-      <path id="obsPressureLine" />
-      <g id="obsWindDots"></g>
-      <line id="obsChartCursor" />
-      <line id="fcCursor" />
-      <g id="fcBars"></g>
-      <g id="fcConfLine"></g>
-      <g id="fcXLabels"></g>
-    </svg>
-    <span id="nearCoastRiCard"></span>
-    <span id="coastDistance"></span>
-    <span id="coastProgressBar"></span>
-    <span id="riProminentBanner"></span>
-    <span id="riBannerTitle"></span>
-    <span id="riBannerSub"></span>
-    <span id="riBannerIcon"></span>
-    <span id="riCardTag"></span>
-    <span id="riIntensityChange"></span>
-    <span id="riIntensityTime"></span>
-    <span id="riProbabilityVal"></span>
-    <span id="riRiskBadge"></span>
-    <span id="riRiskStatusText"></span>
-    <span id="riCalcVerdict"></span>
-    <span id="calcBadgeText"></span>
-    <span id="calcNodeResult"></span>
-    <span id="calcResultLabel"></span>
-    <span id="calcValCoast"></span>
-    <span id="calcValOhc"></span>
-    <span id="calcValShear"></span>
-    <span id="barCoast"></span>
-    <span id="barOhc"></span>
-    <span id="barShear"></span>
-    <span id="tensorCoast"></span>
-    <span id="tensorOhc"></span>
-    <span id="tensorVws"></span>
-    <span id="currentObsChange"></span>
-    <span id="currentObsNote"></span>
-    <span id="currentObsPressure"></span>
-    <span id="currentObsTime"></span>
-    <span id="currentObsWind"></span>
-    <!-- flow pipeline nodes used in app.js -->
-    <span id="flowNodeSat"></span>
-    <span id="flowNodeFusion"></span>
-    <span id="flowNodeCF"></span>
-    <span id="flowNodeInnerCore"></span>
-    <span id="flowNodePhysicsRI"></span>
-    <span id="flowNodeRI"></span>
-    <span id="flowNodeRIW"></span>
-    <span id="flowNodeFC"></span>
-    <span id="flowNodeRadii"></span>
-    <span id="flowNodeClass"></span>
-    <span id="flowNodeSubMin"></span>
-    <span id="flowNodeSDMA"></span>
-    <span id="flowStatusLabel"></span>
-    <!-- advisory elements -->
-    <span id="advCycloneStatus"></span>
-    <span id="advIntensity"></span>
-    <span id="advRiProb"></span>
-    <span id="advCoastRisk"></span>
-    <span id="advForecastWindow"></span>
-    <span id="advCenterConf"></span>
-    <span id="advLatestObs"></span>
-    <span id="advLandfall"></span>
-    <span id="advMonitoring"></span>
-    <span id="hudWindSpeed"></span>
-    <span id="hudCoords"></span>
-    <span id="hudPressure"></span>
-    <span id="cfPrevCoords"></span>
-    <span id="cfCurrCoords"></span>
-    <span id="cfConfBadge"></span>
-    <span id="cfConfFill"></span>
-    <span id="cfConfVal"></span>
-    <span id="cfMoveDir"></span>
-    <span id="cfDisplacement"></span>
-    <span id="cfFixTime"></span>
-    <span id="icState0"></span>
-    <span id="icState1"></span>
-    <span id="icState2"></span>
-    <span id="icState3"></span>
-    <span id="icState4"></span>
-    <span id="innercoreChangeTag"></span>
-    <span id="predOhc"></span>
-    <span id="predOhcStatus"></span>
-    <span id="predSst"></span>
-    <span id="predSstStatus"></span>
-    <span id="predShear"></span>
-    <span id="predShearStatus"></span>
-    <span id="predPress"></span>
-    <span id="predPressStatus"></span>
-    <span id="predCoast"></span>
-    <span id="predCoastStatus"></span>
-    <span id="predCombinedBox"></span>
-    <span id="predCombinedVal"></span>
-    <span id="classCatCurrent"></span>
-    <span id="classWindCurrent"></span>
-    <span id="classItem24"></span>
-    <span id="classItem48"></span>
-    <span id="classItem72"></span>
-    <span id="classCat24"></span>
-    <span id="classCat48"></span>
-    <span id="classCat72"></span>
-    <span id="classWind24"></span>
-    <span id="classWind48"></span>
-    <span id="classWind72"></span>
-    <span id="fusionStatusTag"></span>
-    <span id="fusionSrcInsat"></span>
-    <span id="fusionSrcMicrowave"></span>
-    <span id="fusionSrcOscat"></span>
-    <span id="rapidAlertText" class="hidden-compat"></span>
-    <span id="subminAlert"></span>
-    <span id="subminCoastRisk"></span>
-    <span id="subminNextObs"></span>
-    <span id="subminHorizon"></span>
-    <span id="landfallSectors"></span>
-    <span id="landfallEta-2" style="display:none"></span>
-    <span id="sdmaAlert" class="hidden-compat"></span>
-    <span id="sdmaRisk" class="hidden-compat"></span>
-    <span id="sdmaIntensification" class="hidden-compat"></span>
-    <span id="sdmaCoastDist" class="hidden-compat"></span>
-    <span id="sdmaWindow" class="hidden-compat"></span>
-    <span id="sdmaMonitoring" class="hidden-compat"></span>
-    <span id="chartHeaderText"></span>
-  </div>
-
-  <!-- Leaflet JS -->
+<!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <!-- jsPDF & AutoTable -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -1074,3 +930,7 @@
 <script src="app.js"></script>
 </body>
 </html>
+`;
+
+fs.writeFileSync(path.join(rootDir, 'index.html'), indexHtmlContent, 'utf8');
+console.log('Successfully written upgraded index.html');
