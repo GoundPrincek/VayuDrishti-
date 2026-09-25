@@ -157,12 +157,40 @@ let currentForecastHour = 0;
 let isPlaying = false;
 let playInterval = null;
 let mapInstance = null;
+let activeSatelliteLayer = 'dark';
+let activeWeatherVariable = null;
+let activeWeatherModel = 'icon_seamless';
+let selectedLiveStorm = null;
+let liveCyclones = [];
+let liveCycloneFeedState = 'loading';
+let weatherGridRequest = null;
+let weatherGridZoomSuppressed = false;
+let liveCycloneRefreshTimer = null;
+const weatherGridCache = new Map();
+const weatherPointCache = new Map();
+const ESRI_STORM_SERVICE = 'https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/Active_Hurricanes_v1/FeatureServer';
+const WEATHER_VARIABLES = {
+  precipitation: { label: 'Precipitation', unit: 'mm', min: 0, max: 40, stops: ['#102a67', '#1686c9', '#1bc2bd', '#9acb55', '#ffd34e', '#f36b38', '#d83259'] },
+  wind_speed_10m: { label: 'Wind speed', unit: 'km/h', min: 0, max: 80, stops: ['#143874', '#148bbd', '#38c8aa', '#d7db61', '#ef9b49', '#e04a58'] },
+  wind_gusts_10m: { label: 'Wind gusts', unit: 'km/h', min: 0, max: 100, stops: ['#143874', '#148bbd', '#38c8aa', '#d7db61', '#ef9b49', '#e04a58'] },
+  temperature_2m: { label: 'Temperature', unit: '°C', min: -10, max: 45, stops: ['#6754b9', '#3989c9', '#47bda2', '#d3cf67', '#f08b45', '#cb4054'] },
+  apparent_temperature: { label: 'Feels like', unit: '°C', min: -10, max: 45, stops: ['#6754b9', '#3989c9', '#47bda2', '#d3cf67', '#f08b45', '#cb4054'] },
+  relative_humidity_2m: { label: 'Relative humidity', unit: '%', min: 0, max: 100, stops: ['#7f5ac7', '#3d83d0', '#2fbcc1', '#80c86b', '#edcf5d'] },
+  dew_point_2m: { label: 'Dew point', unit: '°C', min: -10, max: 35, stops: ['#6754b9', '#3989c9', '#47bda2', '#d3cf67', '#f08b45', '#cb4054'] },
+  wet_bulb_temperature_2m: { label: 'Wet bulb', unit: '°C', min: -10, max: 35, stops: ['#6754b9', '#3989c9', '#47bda2', '#d3cf67', '#f08b45', '#cb4054'] },
+  surface_pressure: { label: 'Surface pressure', unit: 'hPa', min: 960, max: 1040, stops: ['#b93058', '#eb7949', '#e9c45a', '#71bd8b', '#3e9dbd', '#615fc0'] }
+};
+let weatherGridLayer = null;
+let prototypeOverlayLayers = { detection: null, explainability: null, impactZone: null };
+let liveCycloneMarkerLayer = null;
+let selectedLiveStormLayer = null;
 
 // Map Layer References
 let mapLayers = {
   pastTrack: null,
   forecastTrack: null,
   forecastPointMarkers: [],
+  pastTrackMarkers: [],
   cone95: null,
   cone68: null,
   ensembles: [],
@@ -175,7 +203,9 @@ let mapLayers = {
   cfConnectLine: null,
   riWatchHalo: null,
   riWatchLine: null,
-  riWatchBeacon: null
+  riWatchBeacon: null,
+  darkBasemap: null,
+  satelliteImagery: null
 };
 
 // Center-Fix state: tracks previous and current eye positions
@@ -192,7 +222,12 @@ const layerVisibility = {
   ensemble: true,
   radii: true,
   riWatch: true,
-  waypoints: true
+  waypoints: true,
+  pastTrack: true,
+  coastalBuffer: true,
+  detection: false,
+  explainability: false,
+  impactZone: false
 };
 
 // Probabilistic 0–72 Hour Forecast Dataset
@@ -247,6 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
   loadScenario(currentScenarioKey);
   setupEventHandlers();
   startClock();
+  refreshLiveCyclones();
+  liveCycloneRefreshTimer = setInterval(refreshLiveCyclones, 10 * 60 * 1000);
 });
 
 // 4. Map Setup
@@ -258,18 +295,867 @@ function initMap() {
     center: scenario.centerCoords,
     zoom: scenario.zoom,
     zoomControl: true,
-    attributionControl: false
+    attributionControl: true
   });
 
-  // Dark Basemap (CartoDB Dark Matter with fallback tile)
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  mapInstance.createPane('gibsPane').style.zIndex = 250;
+  mapInstance.createPane('weatherPane').style.zIndex = 340;
+
+  mapLayers.darkBasemap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 18,
-    subdomains: 'abcd'
+    subdomains: 'abcd',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>'
   }).addTo(mapInstance);
+
+  L.control.scale({ position: 'bottomright', metric: true, imperial: false }).addTo(mapInstance);
+  mapInstance.on('mousemove', (event) => {
+    const coordsEl = document.getElementById('mapPointerCoordinates');
+    if (!coordsEl) return;
+    const { lat, lng } = event.latlng;
+    const latHemisphere = lat < 0 ? 'S' : 'N';
+    const lngHemisphere = lng < 0 ? 'W' : 'E';
+    coordsEl.textContent = `${Math.abs(lat).toFixed(2)}°${latHemisphere}, ${Math.abs(lng).toFixed(2)}°${lngHemisphere}`;
+  });
+  mapInstance.on('click', event => openForecastMapPopup(event.latlng));
+  mapInstance.on('moveend', () => {
+    if (!activeWeatherVariable) return;
+    if (mapInstance.getZoom() < 5) {
+      weatherGridZoomSuppressed = true;
+      if (weatherGridRequest) {
+        weatherGridRequest.abort();
+        weatherGridRequest = null;
+      }
+      clearWeatherGrid();
+      updateWeatherLegend(null);
+      setWeatherStatus('Zoom in to view the local forecast grid');
+      return;
+    }
+    if (weatherGridZoomSuppressed) {
+      weatherGridZoomSuppressed = false;
+      loadWeatherGrid();
+    }
+  });
+}
+
+function satelliteTimestamp(minutesAgo = 20) {
+  const time = new Date(Date.now() - minutesAgo * 60000);
+  time.setUTCMinutes(Math.floor(time.getUTCMinutes() / 10) * 10, 0, 0);
+  return time.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function satelliteDate(daysAgo = 1) {
+  const time = new Date();
+  time.setUTCDate(time.getUTCDate() - daysAgo);
+  return time.toISOString().slice(0, 10);
+}
+
+function setSatelliteLayer(layerKey) {
+  activeSatelliteLayer = layerKey;
+  if (!mapInstance) return;
+  const selector = document.getElementById('satelliteLayerSelect');
+  if (selector && selector.value !== layerKey) selector.value = layerKey;
+
+  if (mapLayers.satelliteImagery) {
+    mapInstance.removeLayer(mapLayers.satelliteImagery);
+    mapLayers.satelliteImagery = null;
+  }
+
+  const layerConfig = {
+    'himawari-visible': {
+      name: 'Himawari AHI visible',
+      layer: 'Himawari_AHI_Band3_Red_Visible_1km',
+      time: satelliteTimestamp(),
+      title: 'Himawari-9 red visible · approximately 10-minute imagery',
+      opacity: 0.82
+    },
+    'himawari-infrared': {
+      name: 'Himawari AHI infrared',
+      layer: 'Himawari_AHI_Band13_Clean_Infrared',
+      time: satelliteTimestamp(),
+      title: 'Himawari-9 clean infrared · approximately 10-minute imagery',
+      opacity: 0.82
+    },
+    'viirs-true-color': {
+      name: 'VIIRS true color',
+      layer: 'VIIRS_SNPP_CorrectedReflectance_TrueColor',
+      time: satelliteDate(1),
+      title: 'Suomi NPP VIIRS corrected true color · near-real-time daily composite',
+      opacity: 0.92
+    }
+  }[layerKey];
+
+  if (layerConfig) {
+    const imageryLayer = L.tileLayer.wms('https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi', {
+      layers: layerConfig.layer,
+      format: 'image/png',
+      transparent: true,
+      version: '1.1.1',
+      srs: 'EPSG:3857',
+      time: layerConfig.time,
+      opacity: layerConfig.opacity,
+      pane: 'gibsPane',
+      attribution: '<a href="https://earthdata.nasa.gov/data/tools/gibs" target="_blank" rel="noopener">NASA EOSDIS GIBS</a>'
+    });
+    imageryLayer.on('loading', () => setSatelliteStatus(`Loading ${layerConfig.name} · ${layerConfig.time}`, layerKey));
+    imageryLayer.on('load', () => setSatelliteStatus(`${layerConfig.title} · ${layerConfig.time}`, layerKey));
+    imageryLayer.on('tileerror', () => setSatelliteStatus(`${layerConfig.name} unavailable for this date or view`, layerKey));
+    mapLayers.satelliteImagery = imageryLayer.addTo(mapInstance);
+  }
+
+  updateOperationalStatus();
+}
+
+function setSatelliteStatus(message, layerKey) {
+  const status = document.getElementById('mapOperationalStatus');
+  if (status && activeSatelliteLayer === layerKey && !selectedLiveStorm) status.textContent = message;
+}
+
+function weatherGridKey() {
+  const center = selectedLiveStorm || SCENARIOS[currentScenarioKey].forecastTrack[0];
+  const locationKey = selectedLiveStorm ? `${selectedLiveStorm.name}:${selectedLiveStorm.basin}` : currentScenarioKey;
+  return `${locationKey}:${Math.round(center.lat)}:${Math.round(center.lng)}:${activeWeatherModel}:${activeWeatherVariable}`;
+}
+
+function setWeatherStatus(message) {
+  const status = document.getElementById('weatherLayerStatus');
+  if (status) status.textContent = message;
+}
+
+function forecastIndexFor(times, hourOffset) {
+  if (!Array.isArray(times) || !times.length) return -1;
+  const target = Date.now() + Math.max(0, Number(hourOffset) || 0) * 3600000;
+  let bestIndex = 0;
+  let bestDifference = Infinity;
+  times.forEach((time, index) => {
+    const difference = Math.abs(new Date(time).getTime() - target);
+    if (Number.isFinite(difference) && difference < bestDifference) {
+      bestDifference = difference;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
+function buildOpenMeteoUrl(coordinates, variables) {
+  const params = new URLSearchParams({
+    latitude: coordinates.map(point => point.lat.toFixed(2)).join(','),
+    longitude: coordinates.map(point => point.lng.toFixed(2)).join(','),
+    hourly: variables.join(','),
+    forecast_days: '4',
+    timezone: 'GMT',
+    wind_speed_unit: 'kmh',
+    models: activeWeatherModel
+  });
+  return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+}
+
+async function fetchOpenMeteo(coordinates, variables, signal) {
+  const response = await fetch(buildOpenMeteoUrl(coordinates, variables), { signal, headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(`Open-Meteo returned ${response.status}`);
+  const payload = await response.json();
+  if (payload && payload.error) throw new Error(payload.reason || 'Open-Meteo rejected the request');
+  return Array.isArray(payload) ? payload : [payload];
+}
+
+function setWeatherVariable(variable) {
+  activeWeatherVariable = activeWeatherVariable === variable ? null : variable;
+  document.querySelectorAll('[data-weather-variable]').forEach(button => {
+    const active = button.dataset.weatherVariable === activeWeatherVariable;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  if (weatherGridRequest) {
+    weatherGridRequest.abort();
+    weatherGridRequest = null;
+  }
+  clearWeatherGrid();
+  if (activeWeatherVariable) loadWeatherGrid();
+  else {
+    setWeatherStatus('Forecast grid hidden');
+    updateWeatherLegend(null);
+    updateOperationalStatus();
+  }
+}
+
+function setWeatherModel(model) {
+  activeWeatherModel = model;
+  const iconButton = document.getElementById('weatherModelIcon');
+  const gfsButton = document.getElementById('weatherModelGfs');
+  [[iconButton, model === 'icon_seamless'], [gfsButton, model === 'ncep_gfs_seamless']].forEach(([button, active]) => {
+    if (!button) return;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  if (activeWeatherVariable) loadWeatherGrid();
+  updateOperationalStatus();
+}
+
+function clearWeatherGrid() {
+  if (weatherGridLayer && mapInstance?.hasLayer(weatherGridLayer)) mapInstance.removeLayer(weatherGridLayer);
+  weatherGridLayer = null;
+}
+
+function cancelWeatherGridRequest() {
+  if (!weatherGridRequest) return;
+  weatherGridRequest.abort();
+  weatherGridRequest = null;
+}
+
+async function loadWeatherGrid() {
+  if (!mapInstance || !activeWeatherVariable) return;
+  if (mapInstance.getZoom() < 5) {
+    weatherGridZoomSuppressed = true;
+    clearWeatherGrid();
+    setWeatherStatus('Zoom in to view the local forecast grid');
+    updateWeatherLegend(null);
+    return;
+  }
+
+  const variable = activeWeatherVariable;
+  const key = weatherGridKey();
+  const cached = weatherGridCache.get(key);
+  if (cached && Date.now() - cached.savedAt < 20 * 60 * 1000) {
+    renderWeatherGrid(cached.points, cached.data, variable);
+    return;
+  }
+
+  if (weatherGridRequest) weatherGridRequest.abort();
+  const requestController = new AbortController();
+  weatherGridRequest = requestController;
+  setWeatherStatus(`Loading ${WEATHER_VARIABLES[variable].label} grid · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'}…`);
+  updateOperationalStatus();
+
+  const center = selectedLiveStorm || SCENARIOS[currentScenarioKey].forecastTrack[0];
+  const points = [];
+  for (let latStep = -4; latStep <= 4; latStep += 1) {
+    for (let lngStep = -4; lngStep <= 4; lngStep += 1) {
+      points.push({ lat: center.lat + latStep, lng: center.lng + lngStep });
+    }
+  }
+
+  try {
+    const data = await fetchOpenMeteo(points, [variable], requestController.signal);
+    if (weatherGridRequest !== requestController || variable !== activeWeatherVariable) return;
+    const result = { points, data, savedAt: Date.now() };
+    weatherGridCache.set(key, result);
+    renderWeatherGrid(points, data, variable);
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    if (weatherGridRequest !== requestController) return;
+    clearWeatherGrid();
+    setWeatherStatus(`Forecast grid unavailable · ${error.message}`);
+    updateWeatherLegend(null);
+  } finally {
+    if (weatherGridRequest === requestController) {
+      weatherGridRequest = null;
+      updateOperationalStatus();
+    }
+  }
+}
+
+function variableColor(variable, value) {
+  const config = WEATHER_VARIABLES[variable];
+  if (!config || !Number.isFinite(value)) return 'transparent';
+  const proportion = Math.max(0, Math.min(0.999, (value - config.min) / (config.max - config.min)));
+  const colorIndex = Math.floor(proportion * config.stops.length);
+  return config.stops[Math.min(colorIndex, config.stops.length - 1)];
+}
+
+function renderWeatherGrid(points, data, variable) {
+  clearWeatherGrid();
+  if (!mapInstance || !activeWeatherVariable || variable !== activeWeatherVariable) return;
+  const config = WEATHER_VARIABLES[variable];
+  const collection = L.layerGroup();
+  const forecastTimeIndex = forecastIndexFor(data[0]?.hourly?.time, currentForecastHour);
+  let valid = 0;
+
+  points.forEach((point, index) => {
+    const value = data[index]?.hourly?.[variable]?.[forecastTimeIndex];
+    if (!Number.isFinite(value)) return;
+    valid += 1;
+    const cell = L.rectangle([
+      [point.lat - 0.5, point.lng - 0.5],
+      [point.lat + 0.5, point.lng + 0.5]
+    ], {
+      pane: 'weatherPane',
+      stroke: false,
+      fillColor: variableColor(variable, value),
+      fillOpacity: 0.27,
+      interactive: false
+    });
+    collection.addLayer(cell);
+  });
+
+  if (valid) collection.addTo(mapInstance);
+  weatherGridLayer = collection;
+  const modelLabel = activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS';
+  weatherGridZoomSuppressed = false;
+  const selectedTime = data[0]?.hourly?.time?.[forecastTimeIndex] || 'forecast time unavailable';
+  setWeatherStatus(valid ? `${valid} forecast grid cells · ${modelLabel} · ${selectedTime} UTC` : 'No forecast values returned for this area');
+  updateWeatherLegend(valid ? { variable, modelLabel } : null);
+}
+
+function updateWeatherLegend(state) {
+  const legend = document.getElementById('mapWeatherLegend');
+  if (!legend) return;
+  if (!state) {
+    legend.hidden = true;
+    return;
+  }
+  const config = WEATHER_VARIABLES[state.variable];
+  legend.hidden = false;
+  document.getElementById('weatherLegendTitle').textContent = config.label.toUpperCase();
+  document.getElementById('weatherLegendMin').textContent = `${config.min} ${config.unit}`;
+  document.getElementById('weatherLegendMax').textContent = `${config.max} ${config.unit}`;
+  const scale = legend.querySelector('.weather-legend-scale i');
+  if (scale) scale.style.background = `linear-gradient(90deg, ${config.stops.join(', ')})`;
+  document.getElementById('weatherLegendSource').textContent = `Open-Meteo · ${state.modelLabel}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+}
+
+function formatWeatherValue(variable, value) {
+  const config = WEATHER_VARIABLES[variable];
+  if (!config || !Number.isFinite(value)) return 'No value';
+  const digits = variable === 'precipitation' ? 1 : (variable === 'relative_humidity_2m' || variable === 'surface_pressure' ? 0 : 1);
+  return `${Number(value).toFixed(digits)} ${config.unit}`;
+}
+
+async function openForecastMapPopup(latlng) {
+  if (!mapInstance) return;
+  const lat = Number(latlng.lat.toFixed(3));
+  const lng = Number(latlng.lng.toFixed(3));
+  const variable = activeWeatherVariable || 'wind_speed_10m';
+  const config = WEATHER_VARIABLES[variable];
+  const popup = L.popup({ className: 'hud-leaflet-popup', maxWidth: 270 })
+    .setLatLng(latlng)
+    .setContent(`<div class="forecast-popup-card"><div class="fp-title">MAP FORECAST · T+${currentForecastHour}H</div><div>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</div><div class="layer-data-status">Loading ${escapeHtml(config.label)} · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'}…</div></div>`)
+    .openOn(mapInstance);
+
+  const cacheKey = `${activeWeatherModel}:${lat.toFixed(1)}:${lng.toFixed(1)}`;
+  let data = weatherPointCache.get(cacheKey);
+  try {
+    if (!data || Date.now() - data.savedAt > 15 * 60 * 1000) {
+      const points = await fetchOpenMeteo([{ lat, lng }], Object.keys(WEATHER_VARIABLES));
+      data = { payload: points[0], savedAt: Date.now() };
+      weatherPointCache.set(cacheKey, data);
+    }
+    const hourly = data.payload?.hourly || {};
+    const index = forecastIndexFor(hourly.time, currentForecastHour);
+    const value = hourly[variable]?.[index];
+    if (!popup.isOpen()) return;
+    popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">${escapeHtml(config.label.toUpperCase())} · T+${currentForecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinate</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="fp-metric-row"><span class="fp-label">Forecast value</span><strong class="fp-val text-cyan">${escapeHtml(formatWeatherValue(variable, value))}</strong></div><div class="fp-metric-row"><span class="fp-label">Valid</span><span>${escapeHtml(hourly.time?.[index] || 'Time unavailable')} UTC</span></div><div class="fp-metric-row"><span class="fp-label">Model</span><span>${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'} · Open-Meteo</span></div></div>`);
+  } catch (error) {
+    if (popup.isOpen()) popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">MAP FORECAST · T+${currentForecastHour}H</div><div>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</div><div class="layer-data-status">Forecast unavailable · ${escapeHtml(error.message)}</div></div>`);
+  }
+}
+
+function readStormAttribute(attributes, ...names) {
+  if (!attributes) return undefined;
+  for (const name of names) {
+    const key = Object.keys(attributes).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+    if (key && attributes[key] !== null && attributes[key] !== '') return attributes[key];
+  }
+  return undefined;
+}
+
+function parseStormTime(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'number' && value > 100000000000) return new Date(value);
+  const text = String(value);
+  if (/^\d{10,12}$/.test(text)) {
+    const normalized = text.padEnd(12, '0');
+    return new Date(Date.UTC(Number(normalized.slice(0, 4)), Number(normalized.slice(4, 6)) - 1, Number(normalized.slice(6, 8)), Number(normalized.slice(8, 10)), Number(normalized.slice(10, 12))));
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function stormPosition(feature) {
+  const geometry = feature?.geometry || {};
+  const attributes = feature?.attributes || {};
+  const lat = Number(geometry.y ?? readStormAttribute(attributes, 'LAT', 'LATITUDE'));
+  const lng = Number(geometry.x ?? readStormAttribute(attributes, 'LON', 'LONGITUDE'));
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+async function queryEsriStormLayer(layerId, where = '1=1', output = 'json') {
+  const params = new URLSearchParams({
+    where,
+    outFields: '*',
+    returnGeometry: 'true',
+    outSR: '4326',
+    f: output
+  });
+  const response = await fetch(`${ESRI_STORM_SERVICE}/${layerId}/query?${params.toString()}`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(`Esri storm feed returned ${response.status}`);
+  const payload = await response.json();
+  if (payload.error) throw new Error(payload.error.message || 'Esri storm feed rejected the request');
+  return payload;
+}
+
+function latestActiveStorms(payload) {
+  const grouped = new Map();
+  (payload.features || []).forEach(feature => {
+    const attributes = feature.attributes || {};
+    const name = String(readStormAttribute(attributes, 'STORMNAME', 'NAME') || '').trim();
+    const position = stormPosition(feature);
+    if (!name || !position) return;
+    const basin = String(readStormAttribute(attributes, 'BASIN') || 'Basin unavailable');
+    const validTime = parseStormTime(readStormAttribute(attributes, 'VALIDTIME', 'ADVDATE', 'DTG', 'DATELBL'));
+    if (validTime && Date.now() - validTime.getTime() > 96 * 60 * 60 * 1000) return;
+    const key = `${name.toLowerCase()}|${basin.toLowerCase()}`;
+    const existing = grouped.get(key);
+    if (!existing || (validTime && (!existing.validTime || validTime > existing.validTime))) {
+      const maxWind = Number(readStormAttribute(attributes, 'MAXWIND', 'VMAX'));
+      const pressure = Number(readStormAttribute(attributes, 'MSLP', 'MINPRESS'));
+      grouped.set(key, {
+        name,
+        basin,
+        category: String(readStormAttribute(attributes, 'STORMTYPE', 'DVLBL') || 'Tropical cyclone'),
+        source: String(readStormAttribute(attributes, 'STORMSRC', 'SOURCE') || 'Esri · NHC/JTWC'),
+        validTime,
+        lat: position.lat,
+        lng: position.lng,
+        maxWind: Number.isFinite(maxWind) ? maxWind : null,
+        pressure: Number.isFinite(pressure) && pressure > 0 ? pressure : null,
+        attributes
+      });
+    }
+  });
+  return [...grouped.values()].sort((a, b) => (b.maxWind || 0) - (a.maxWind || 0));
+}
+
+async function refreshLiveCyclones() {
+  const status = document.getElementById('liveCycloneFeedStatus');
+  if (status) status.textContent = 'Refreshing Esri active cyclone feed…';
+  try {
+    const payload = await queryEsriStormLayer(1);
+    liveCyclones = latestActiveStorms(payload);
+    liveCycloneFeedState = 'ready';
+    if (selectedLiveStorm) {
+      const previousWeatherKey = weatherGridKey();
+      const selected = liveCyclones.find(storm => storm.name === selectedLiveStorm.name && storm.basin === selectedLiveStorm.basin);
+      if (selected) {
+        selected.liveMarker = selectedLiveStorm.liveMarker;
+        selectedLiveStorm = selected;
+        selected.liveMarker?.setLatLng([selected.lat, selected.lng]);
+        updateStormIntelPanel();
+        if (activeWeatherVariable && weatherGridKey() !== previousWeatherKey) {
+          cancelWeatherGridRequest();
+          clearWeatherGrid();
+          loadWeatherGrid();
+        }
+      } else {
+        clearSelectedLiveStorm();
+        loadScenario(currentScenarioKey);
+      }
+    }
+    renderLiveCycloneFeed();
+    updateOperationalStatus();
+  } catch (error) {
+    liveCycloneFeedState = 'error';
+    if (status) status.textContent = `Live feed unavailable · ${error.message}`;
+    renderLiveCycloneFeed();
+    updateOperationalStatus();
+  }
+}
+
+function renderLiveCycloneFeed() {
+  const list = document.getElementById('liveCycloneFeedList');
+  const status = document.getElementById('liveCycloneFeedStatus');
+  if (!list) return;
+  list.replaceChildren();
+
+  if (liveCycloneFeedState === 'error') {
+    if (status && !status.textContent.startsWith('Live feed unavailable')) status.textContent = 'Live storm feed unavailable';
+    const empty = document.createElement('span');
+    empty.className = 'live-cyclone-empty';
+    empty.textContent = 'Scenario fixtures remain available; live storms were not loaded.';
+    list.appendChild(empty);
+    return;
+  }
+
+  if (!liveCyclones.length) {
+    if (status) status.textContent = 'Esri / NHC / JTWC · no current positions reported';
+    const empty = document.createElement('span');
+    empty.className = 'live-cyclone-empty';
+    empty.textContent = 'No active cyclones in the public feed';
+    list.appendChild(empty);
+  } else {
+    if (status) status.textContent = `${liveCyclones.length} active position${liveCyclones.length === 1 ? '' : 's'} · Esri / NHC / JTWC`;
+    liveCyclones.forEach(storm => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `live-cyclone-item${selectedLiveStorm?.name === storm.name && selectedLiveStorm?.basin === storm.basin ? ' selected' : ''}`;
+      button.setAttribute('aria-label', `Select ${storm.name}, ${storm.basin}`);
+      const name = document.createElement('strong');
+      name.textContent = storm.name;
+      const meta = document.createElement('span');
+      const windKmh = storm.maxWind === null ? '' : ` · ${Math.round(storm.maxWind * 1.60934)} km/h`;
+      meta.textContent = `${storm.basin}${windKmh}`;
+      button.append(name, meta);
+      button.addEventListener('click', () => selectLiveStorm(storm));
+      list.appendChild(button);
+    });
+  }
+
+  if (mapInstance) renderLiveCycloneMarkers();
+}
+
+function stormMarkerColor(storm) {
+  if (storm.maxWind >= 74) return '#ef4444';
+  if (storm.maxWind >= 39) return '#f59e0b';
+  return '#38bdf8';
+}
+
+function renderLiveCycloneMarkers() {
+  if (!mapInstance) return;
+  if (liveCycloneMarkerLayer) mapInstance.removeLayer(liveCycloneMarkerLayer);
+  liveCycloneMarkerLayer = L.layerGroup();
+  liveCyclones.forEach(storm => {
+    const marker = L.circleMarker([storm.lat, storm.lng], {
+      radius: 6,
+      color: '#ffffff',
+      weight: 1.5,
+      fillColor: stormMarkerColor(storm),
+      fillOpacity: 0.95
+    });
+    marker.bindTooltip(`${storm.name} · ${storm.category}`, { direction: 'top', className: 'hud-tooltip' });
+    marker.on('click', () => selectLiveStorm(storm));
+    liveCycloneMarkerLayer.addLayer(marker);
+  });
+  liveCycloneMarkerLayer.addTo(mapInstance);
+}
+
+function clearSelectedLiveStorm() {
+  if (selectedLiveStormLayer && mapInstance) mapInstance.removeLayer(selectedLiveStormLayer);
+  selectedLiveStormLayer = null;
+  if (selectedLiveStorm && selectedLiveStorm.liveMarker && mapInstance) mapInstance.removeLayer(selectedLiveStorm.liveMarker);
+  selectedLiveStorm = null;
+  renderLiveCycloneFeed();
+}
+
+function toGeoJSON(esriPayload) {
+  const features = (esriPayload.features || []).map(feature => {
+    const geometry = feature.geometry || {};
+    let geoGeometry = null;
+    if (Number.isFinite(geometry.x) && Number.isFinite(geometry.y)) {
+      geoGeometry = { type: 'Point', coordinates: [geometry.x, geometry.y] };
+    } else if (Array.isArray(geometry.paths)) {
+      geoGeometry = { type: geometry.paths.length > 1 ? 'MultiLineString' : 'LineString', coordinates: geometry.paths.length > 1 ? geometry.paths : geometry.paths[0] };
+    } else if (Array.isArray(geometry.rings)) {
+      geoGeometry = { type: 'Polygon', coordinates: geometry.rings };
+    }
+    return { type: 'Feature', geometry: geoGeometry, properties: feature.attributes || {} };
+  }).filter(feature => feature.geometry);
+  return { type: 'FeatureCollection', features };
+}
+
+function formatStormCoordinates(storm) {
+  const latHemisphere = storm.lat < 0 ? 'S' : 'N';
+  const lngHemisphere = storm.lng < 0 ? 'W' : 'E';
+  return `${Math.abs(storm.lat).toFixed(2)}°${latHemisphere}, ${Math.abs(storm.lng).toFixed(2)}°${lngHemisphere}`;
+}
+
+function renderIntensityPlot(points) {
+  const chart = document.getElementById('stormIntensityPlot');
+  if (!chart) return;
+  chart.replaceChildren();
+  const values = points.filter(point => Number.isFinite(point.wind)).sort((a, b) => a.hour - b.hour);
+  if (values.length < 2) return;
+  const min = Math.min(...values.map(point => point.wind));
+  const max = Math.max(...values.map(point => point.wind));
+  const coordinates = values.map((point, index) => {
+    const x = 8 + index * (224 / (values.length - 1));
+    const y = 36 - ((point.wind - min) / Math.max(1, max - min)) * 25;
+    return { x, y };
+  });
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  line.setAttribute('points', coordinates.map(point => `${point.x},${point.y}`).join(' '));
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', '#54d7ee');
+  line.setAttribute('stroke-width', '2');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('stroke-linejoin', 'round');
+  chart.appendChild(line);
+  coordinates.forEach(point => {
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', point.x);
+    dot.setAttribute('cy', point.y);
+    dot.setAttribute('r', '2.2');
+    dot.setAttribute('fill', '#e7fbff');
+    chart.appendChild(dot);
+  });
+}
+
+function renderStormFeatureChips(features) {
+  const container = document.getElementById('stormDetailFeatureChips');
+  if (!container) return;
+  container.replaceChildren();
+  features.forEach(feature => {
+    const chip = document.createElement('div');
+    chip.className = 'storm-feature-chip';
+    const label = document.createElement('span');
+    label.textContent = feature.label;
+    const value = document.createElement('strong');
+    value.textContent = feature.value || 'Not supplied';
+    chip.append(label, value);
+    container.appendChild(chip);
+  });
+}
+
+function hideScenarioMapLayersForLiveStorm() {
+  if (mapInstance) {
+    const simulationLayers = new Set(Object.entries(mapLayers)
+      .filter(([key]) => key !== 'darkBasemap' && key !== 'satelliteImagery')
+      .flatMap(([, layer]) => Array.isArray(layer) ? layer : [layer])
+      .filter(Boolean));
+    simulationLayers.forEach(layer => {
+      if (mapInstance.hasLayer(layer)) mapInstance.removeLayer(layer);
+    });
+  }
+  clearPrototypeOverlays();
+  document.querySelectorAll('.map-legend, .map-radii-legend').forEach(legend => { legend.style.display = 'none'; });
+}
+
+async function selectLiveStorm(storm) {
+  if (!mapInstance || !storm) return;
+  clearSelectedLiveStorm();
+  selectedLiveStorm = storm;
+  cancelWeatherGridRequest();
+  clearWeatherGrid();
+  hideScenarioMapLayersForLiveStorm();
+  const icon = L.divIcon({
+    className: 'custom-storm-pin live-storm-pin',
+    html: `<div class="storm-marker-shell" style="--storm-tone:${stormMarkerColor(storm)}"><span class="storm-marker-pulse"></span><span class="storm-marker-core"></span><span class="storm-marker-label">${escapeHtml(storm.name)} · LIVE</span></div>`,
+    iconSize: [170, 42],
+    iconAnchor: [21, 21]
+  });
+  storm.liveMarker = L.marker([storm.lat, storm.lng], { icon, zIndexOffset: 900 }).addTo(mapInstance);
+  storm.liveMarker.bindPopup(`<div class="forecast-popup-card"><div class="fp-title">${escapeHtml(storm.name)} · LIVE FEED</div><div>${escapeHtml(storm.basin)}</div><div>${escapeHtml(formatStormCoordinates(storm))}</div></div>`);
+  mapInstance.setView([storm.lat, storm.lng], Math.max(5, mapInstance.getZoom()), { animate: true });
+  updateStormIntelPanel();
+  renderLiveCycloneFeed();
+  if (activeWeatherVariable) loadWeatherGrid();
+  updateOperationalStatus();
+
+  const where = `STORMNAME='${storm.name.replace(/'/g, "''")}' AND BASIN='${storm.basin.replace(/'/g, "''")}'`;
+  try {
+    const [forecastPosition, forecastTrack, observedTrack, cone] = await Promise.all([
+      queryEsriStormLayer(0, where),
+      queryEsriStormLayer(2, where),
+      queryEsriStormLayer(3, where),
+      queryEsriStormLayer(4, where)
+    ]);
+    if (selectedLiveStorm !== storm) return;
+    selectedLiveStormLayer = L.layerGroup();
+    const trackLayers = [
+      [toGeoJSON(observedTrack), { color: '#a8b5c5', weight: 2.4, opacity: 0.82, dashArray: '4 4' }],
+      [toGeoJSON(forecastTrack), { color: '#38bdf8', weight: 3, opacity: 0.92, dashArray: '7 5' }],
+      [toGeoJSON(cone), { color: '#38bdf8', weight: 1.2, fillColor: '#38bdf8', fillOpacity: 0.12 }]
+    ];
+    trackLayers.forEach(([geojson, style]) => {
+      const layer = L.geoJSON(geojson, {
+        style,
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: '#38bdf8', fillOpacity: 0.95 })
+      });
+      selectedLiveStormLayer.addLayer(layer);
+    });
+    selectedLiveStormLayer.addTo(mapInstance);
+    const intensityPoints = (forecastPosition.features || []).map(feature => ({
+      hour: Number(readStormAttribute(feature.attributes, 'FCSTPRD', 'TAU')) || 0,
+      wind: Number(readStormAttribute(feature.attributes, 'MAXWIND', 'VMAX'))
+    }));
+    renderIntensityPlot(intensityPoints);
+    const chartLabel = document.querySelector('.storm-intel-chart-wrap .storm-intel-section-label');
+    if (chartLabel) chartLabel.textContent = 'ESRI FORECAST WIND · MPH';
+  } catch (error) {
+    const classification = document.getElementById('stormDetailClassification');
+    if (classification) classification.textContent = `Live position available; forecast track unavailable · ${error.message}`;
+  }
+}
+
+function updateStormIntelPanel() {
+  const name = document.getElementById('stormDetailName');
+  const category = document.getElementById('stormDetailCategory');
+  const position = document.getElementById('stormDetailPosition');
+  const wind = document.getElementById('stormDetailWind');
+  const pressure = document.getElementById('stormDetailPressure');
+  const intensity = document.getElementById('stormDetailIntensity');
+  const dvorak = document.getElementById('stormDetailDvorak');
+  const source = document.getElementById('stormDetailSource');
+  const badge = document.getElementById('stormDetailStatus');
+  const classification = document.getElementById('stormDetailClassification');
+  const risk = document.getElementById('stormDetailRiRisk');
+  const chartLabel = document.querySelector('.storm-intel-chart-wrap .storm-intel-section-label');
+
+  if (selectedLiveStorm) {
+    const storm = selectedLiveStorm;
+    if (name) name.textContent = storm.name;
+    if (category) category.textContent = `${storm.category} · ${storm.basin}`;
+    if (position) position.textContent = formatStormCoordinates(storm);
+    if (wind) wind.textContent = storm.maxWind === null ? 'Not reported' : `${storm.maxWind} mph · ${Math.round(storm.maxWind * 1.60934)} km/h`;
+    if (pressure) pressure.textContent = storm.pressure === null ? 'Not reported' : `${storm.pressure} hPa`;
+    if (intensity) intensity.textContent = storm.category;
+    if (dvorak) dvorak.textContent = 'Not supplied';
+    if (source) source.textContent = 'ESRI · LIVE';
+    if (badge) badge.textContent = 'LIVE FEED';
+    if (classification) classification.textContent = 'No live AI classification is provided by this storm feed.';
+    const featureLabel = document.querySelector('.storm-intel-classification .storm-intel-section-label');
+    if (featureLabel) featureLabel.textContent = 'CLASSIFICATION INPUTS · LIVE FEED';
+    renderStormFeatureChips([
+      { label: 'Shear pattern', value: 'Not supplied' },
+      { label: 'Curved band', value: 'Not supplied' },
+      { label: 'Embedded centre', value: 'Not supplied' },
+      { label: 'CDO', value: 'Not supplied' },
+      { label: 'Eye', value: 'Not supplied' }
+    ]);
+    if (risk) risk.textContent = 'Rapid-intensification risk: not supplied by feed';
+    if (chartLabel) chartLabel.textContent = 'ESRI FORECAST WIND · MPH';
+    return;
+  }
+
+  const scenario = SCENARIOS[currentScenarioKey];
+  const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
+  if (!scenario) return;
+  const point = scenario.forecastTrack.find(item => item.hour === currentForecastHour) || scenario.forecastTrack[0];
+  const observation = scenarioData?.observations?.[currentObsIndex] || scenarioData?.observations?.[4];
+  const windKmh = Math.round((point.kts || 0) * 1.852);
+  if (name) name.textContent = scenarioData?.name || scenario.name;
+  if (category) category.textContent = scenario.category;
+  if (position) position.textContent = formatStormCoordinates(point);
+  if (wind) wind.textContent = `${windKmh} km/h`;
+  if (pressure) pressure.textContent = `${point.hpa || '—'} hPa`;
+  if (intensity) intensity.textContent = scenario.category;
+  if (dvorak) dvorak.textContent = 'Not supplied';
+  if (source) source.textContent = 'SCENARIO';
+  if (badge) badge.textContent = 'DEMO';
+  if (classification) classification.textContent = 'Scenario fixture values; no connected classifier output.';
+  const featureLabel = document.querySelector('.storm-intel-classification .storm-intel-section-label');
+  if (featureLabel) featureLabel.textContent = 'CLASSIFICATION INPUTS · SCENARIO FIXTURE';
+  renderStormFeatureChips([
+    { label: 'Shear pattern', value: scenarioData?.riWatch?.windShear ? `${scenarioData.riWatch.windShear} · fixture` : 'Not supplied' },
+    { label: 'Curved band', value: 'Not supplied' },
+    { label: 'Embedded centre', value: 'Not supplied' },
+    { label: 'CDO', value: observation?.cdo ? `${observation.cdo} · fixture` : 'Not supplied' },
+    { label: 'Eye', value: point.eye ? `${point.eye} km · fixture` : 'Not supplied' }
+  ]);
+  if (risk) risk.textContent = `Rapid-intensification risk: ${scenarioData?.riWatch?.status || 'scenario estimate'}`;
+  if (chartLabel) chartLabel.textContent = 'SCENARIO INTENSITY GUIDANCE';
+  renderIntensityPlot(scenario.forecastTrack.map(item => ({ hour: item.hour, wind: item.kts * 1.852 })));
+}
+
+function clearPrototypeOverlays() {
+  Object.values(prototypeOverlayLayers).forEach(layer => {
+    if (layer && mapInstance) mapInstance.removeLayer(layer);
+  });
+  prototypeOverlayLayers = { detection: null, explainability: null, impactZone: null };
+}
+
+function getScenarioForecastDetails(hour) {
+  const scenario = SCENARIOS[currentScenarioKey];
+  const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
+  const point = scenario?.forecastTrack?.find(item => item.hour === Number(hour)) || scenario?.forecastTrack?.[0];
+  if (!point) return { hour: Number(hour) || 0, windKmh: 0, confidence: 0, confidenceLabel: 'Not supplied', time: `T+${hour}h`, status: 'Forecast position unavailable', uncertainty: 'Not supplied' };
+  const checkpoint = scenarioData?.forecastCheckpoints?.find(item => parseInt(item.hour, 10) === point.hour);
+  const confidenceLabel = String(checkpoint?.confidence || 'Not supplied');
+  const confidence = /high/i.test(confidenceLabel) ? 85 : (/moderate/i.test(confidenceLabel) ? 70 : (/low/i.test(confidenceLabel) ? 55 : 0));
+  return {
+    ...point,
+    hour: point.hour,
+    windKmh: Math.round(point.kts * 1.852),
+    confidence,
+    confidenceLabel,
+    time: checkpoint?.time || `T+${point.hour}h`,
+    status: checkpoint?.status || point.desc || 'Scenario forecast',
+    uncertainty: checkpoint?.uncertainty || 'Not supplied'
+  };
+}
+
+function updatePrototypeOverlays(point) {
+  clearPrototypeOverlays();
+  if (!mapInstance || selectedLiveStorm) return;
+  const scenario = SCENARIOS[currentScenarioKey];
+  const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
+  if (!scenario || !point) return;
+  const center = [point.lat, point.lng];
+
+  if (layerVisibility.detection) {
+    const detection = L.layerGroup();
+    const halfHeight = Math.max(0.34, (point.eye || 20) / 110);
+    const halfWidth = Math.max(0.48, (point.eye || 20) / 80);
+    const observation = scenarioData?.observations?.[currentObsIndex] || scenarioData?.observations?.[4];
+    const bounds = [
+      [center[0] - halfHeight, center[1] - halfWidth],
+      [center[0] + halfHeight, center[1] + halfWidth]
+    ];
+    const box = L.rectangle(bounds, { color: '#48dff5', weight: 1.5, dashArray: '5 4', fillColor: '#26c6da', fillOpacity: 0.045 });
+    box.bindTooltip(`Scenario core locator · Eye ${point.eye ? `${point.eye} km` : 'not supplied'} · CDO ${observation?.cdo || 'not supplied'} · no live CV confidence`, { sticky: true });
+    detection.addLayer(box);
+    [
+      bounds[0],
+      [bounds[0][0], bounds[1][1]],
+      [bounds[1][0], bounds[0][1]],
+      bounds[1]
+    ].forEach((corner, index) => detection.addLayer(L.marker(corner, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({ className: `ai-detection-corner ai-detection-corner-${index}`, html: '<i></i>', iconSize: [12, 12], iconAnchor: [6, 6] })
+    })));
+    detection.addLayer(L.marker(center, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({ className: 'ai-detection-label', html: '<span>CYCLONE CORE · DEMO</span>', iconSize: [136, 18], iconAnchor: [68, 29] })
+    }));
+    prototypeOverlayLayers.detection = detection;
+    detection.addTo(mapInstance);
+  }
+
+  if (layerVisibility.explainability) {
+    const explainability = L.layerGroup();
+    const radiusKm = Math.max(24, (point.eye || 20) * 2.5);
+    const region = L.circle(center, {
+      radius: radiusKm * 1000,
+      color: '#9b87f5',
+      weight: 1,
+      dashArray: '3 5',
+      fillColor: '#8b73e6',
+      fillOpacity: 0.075
+    });
+    region.bindTooltip(`Scenario feature anchor · ${scenarioData?.observations?.[4]?.cdo || 'CDO'} · spatial model weights are not supplied`, { sticky: true });
+    explainability.addLayer(region);
+    prototypeOverlayLayers.explainability = explainability;
+    explainability.addTo(mapInstance);
+  }
+
+  if (layerVisibility.impactZone) {
+    const impactZone = L.layerGroup();
+    const r34Km = scenarioData?.windRadii?.r34_km || Math.round(180 * Math.max(0.65, Math.min(1.35, (point.kts || 65) / 65)));
+    const zone = L.circle(center, {
+      radius: r34Km * 1000,
+      color: '#f59e0b',
+      weight: 1.2,
+      dashArray: '5 5',
+      fillColor: '#f97316',
+      fillOpacity: 0.055
+    });
+    zone.bindTooltip(`Scenario gale-wind proxy · 34 kt radius ${r34Km} km · not an official impact footprint`, { sticky: true });
+    impactZone.addLayer(zone);
+    prototypeOverlayLayers.impactZone = impactZone;
+    impactZone.addTo(mapInstance);
+  }
 }
 
 // 5. Load Scenario & Render Layers
 function loadScenario(key) {
+  clearSelectedLiveStorm();
+  cancelWeatherGridRequest();
+  clearWeatherGrid();
+  clearPrototypeOverlays();
+  document.querySelectorAll('.map-legend, .map-radii-legend').forEach(legend => { legend.style.display = ''; });
   currentScenarioKey = key;
   const scenario = SCENARIOS[key];
   currentForecastHour = 0;
@@ -294,13 +1180,12 @@ function loadScenario(key) {
   mapLayers.pastTrack = L.polyline(pastCoords, {
     color: '#94a3b8',
     weight: 3,
-    dashArray: '4, 4',
     opacity: 0.8
   }).addTo(mapInstance);
 
   // Past Track Markers
-  scenario.pastTrack.forEach(pt => {
-    L.circleMarker([pt.lat, pt.lng], {
+  mapLayers.pastTrackMarkers = scenario.pastTrack.map(pt => {
+    return L.circleMarker([pt.lat, pt.lng], {
       radius: 4,
       color: '#94a3b8',
       fillColor: '#0a0f1d',
@@ -341,11 +1226,13 @@ function loadScenario(key) {
   mapLayers.forecastTrack = L.polyline(forecastCoords, {
     color: '#00f2fe',
     weight: 3.5,
-    opacity: 0.95
+    opacity: 0.95,
+    dashArray: '7, 5'
   }).addTo(mapInstance);
 
-  // Render Interactive Probabilistic Forecast Points along the Track (0h, 12h, 24h, 48h, 72h)
-  mapLayers.forecastPointMarkers = PROBABILISTIC_FORECAST_POINTS.map(p => {
+  // Render waypoints from the selected scenario track.
+  mapLayers.forecastPointMarkers = scenario.forecastTrack.map(p => {
+    const details = getScenarioForecastDetails(p.hour);
     const ptIcon = L.divIcon({
       className: 'custom-forecast-point-pin',
       html: `
@@ -362,10 +1249,11 @@ function loadScenario(key) {
     m.bindPopup(`
       <div class="forecast-popup-card">
         <div class="fp-title">${p.hour} HOURS</div>
-        <div class="fp-metric-row"><span class="fp-label">Wind:</span> <strong class="fp-val text-red">${p.windKmh} km/h</strong></div>
-        <div class="fp-metric-row"><span class="fp-label">Confidence:</span> <strong class="fp-val text-cyan">${p.confidence}%</strong></div>
-        <div class="fp-metric-row"><span class="fp-label">Forecast Time:</span> <span class="fp-val">${p.time}</span></div>
-        <div class="fp-metric-row"><span class="fp-label">Uncertainty Cone:</span> <span class="fp-val">±${p.coneRadiusKm} km</span></div>
+        <div class="fp-metric-row"><span class="fp-label">Wind:</span> <strong class="fp-val text-red">${details.windKmh} km/h</strong></div>
+        <div class="fp-metric-row"><span class="fp-label">Confidence:</span> <strong class="fp-val text-cyan">${details.confidenceLabel}</strong></div>
+        <div class="fp-metric-row"><span class="fp-label">Forecast Time:</span> <span class="fp-val">${details.time}</span></div>
+        <div class="fp-metric-row"><span class="fp-label">Position:</span> <span class="fp-val">${formatStormCoordinates(p)}</span></div>
+        <div class="fp-metric-row"><span class="fp-label">Source:</span> <span class="fp-val">Scenario forecast</span></div>
       </div>
     `, { className: 'hud-leaflet-popup' });
 
@@ -385,16 +1273,18 @@ function loadScenario(key) {
   }).bindTooltip('200 km Coastal Danger Buffer Zone', { sticky: true }).addTo(mapInstance);
 
   // Initialize Storm Eye Center Marker
+  const intensityColor = scenario.category.includes('Cat-3') ? '#ef4444' : '#f97316';
   const eyeIcon = L.divIcon({
     className: 'custom-storm-pin',
     html: `
-      <div style="position:relative; width:30px; height:30px; display:flex; align-items:center; justify-content:center;">
-        <div style="position:absolute; width:100%; height:100%; border-radius:50%; border:2px solid #f43f5e; animation:pulse 1.5s infinite;"></div>
-        <div style="width:12px; height:12px; border-radius:50%; background:#f43f5e; box-shadow:0 0 10px #f43f5e;"></div>
+      <div class="storm-marker-shell" style="--storm-tone:${intensityColor}">
+        <span class="storm-marker-pulse"></span>
+        <span class="storm-marker-core"></span>
+        <span class="storm-marker-label">${scenario.name.replace(/['"]/g, '')}</span>
       </div>
     `,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15]
+    iconSize: [150, 42],
+    iconAnchor: [21, 21]
   });
 
   const curPoint = scenario.forecastTrack[0];
@@ -423,10 +1313,52 @@ function loadScenario(key) {
 
   // Apply layer visibility flags
   applyLayerVisibility();
+  updatePrototypeOverlays(curPoint);
+  updateStormIntelPanel();
+  if (activeWeatherVariable) loadWeatherGrid();
 
   // Render mini data visualizations
   renderObsCharts();
   renderForecastDataLayer();
+  updateOperationalStatus();
+}
+
+function updateOperationalStatus() {
+  const statusEl = document.getElementById('mapOperationalStatus');
+  const modeBadge = document.getElementById('topDataModeBadge');
+  let mode = 'SCENARIO MODE · DEMO / FALLBACK DATA';
+  if (selectedLiveStorm) mode = `LIVE CYCLONE DATA · ESRI / NHC / JTWC · ${selectedLiveStorm.name}`;
+  else if (activeWeatherVariable) mode = `FORECAST MODE · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'} · OPEN-METEO`;
+  else if (activeSatelliteLayer !== 'dark') mode = `SATELLITE MODE · NASA GIBS · ${activeSatelliteLayer.replaceAll('-', ' ').toUpperCase()}`;
+  else if (liveCycloneFeedState === 'ready' && liveCyclones.length === 0) mode = 'NO ACTIVE CYCLONES · SCENARIO / DEMO';
+  else if (activePage === 'forecast' || currentForecastHour > 0) mode = 'FORECAST MODE · SCENARIO DATA';
+  else if (activePage === 'tracking') mode = 'TRACKING MODE · SCENARIO DATA';
+  if (liveCycloneFeedState === 'error' && !selectedLiveStorm && !activeWeatherVariable && activeSatelliteLayer === 'dark') mode = 'DEMO / FALLBACK DATA · LIVE FEED UNAVAILABLE';
+  if (statusEl) statusEl.textContent = mode;
+  if (statusEl) statusEl.dataset.mode = selectedLiveStorm ? 'live' : (activeWeatherVariable ? 'forecast' : (activeSatelliteLayer !== 'dark' ? 'satellite' : (liveCycloneFeedState === 'error' ? 'fallback' : 'demo')));
+  document.getElementById('page-dashboard')?.classList.toggle('has-live-storm', Boolean(selectedLiveStorm));
+  const timelineTitle = document.querySelector('.slider-title');
+  if (timelineTitle) timelineTitle.textContent = selectedLiveStorm ? 'Scenario timeline · live storm track shown above' : 'Forecast Track Progression:';
+  if (selectedLiveStorm) {
+    const storm = selectedLiveStorm;
+    const setStatusValue = (id, value) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+    const windKmh = storm.maxWind === null ? '' : ` (${Math.round(storm.maxWind * 1.60934)} km/h)`;
+    setStatusValue('dashCycloneName', storm.name);
+    setStatusValue('dashPosition', formatStormCoordinates(storm));
+    setStatusValue('dashIntensity', storm.category);
+    setStatusValue('dashMaxWind', storm.maxWind === null ? 'Not reported' : `${storm.maxWind} mph${windKmh}`);
+    setStatusValue('dashPressure', storm.pressure === null ? 'Not reported' : `${storm.pressure} hPa`);
+    setStatusValue('dashMovement', 'Not supplied by feed');
+    setStatusValue('dashRiskBadge', 'Not supplied');
+    const riskBadge = document.getElementById('dashRiskBadge');
+    if (riskBadge) riskBadge.className = 'status-risk-pill mod';
+  }
+  if (modeBadge) {
+    modeBadge.textContent = selectedLiveStorm ? 'LIVE STORM FEED' : (activeWeatherVariable ? `${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'} FORECAST` : (activeSatelliteLayer !== 'dark' ? 'NASA SATELLITE' : 'SCENARIO / DEMO'));
+  }
 }
 
 // ============================================
@@ -635,6 +1567,8 @@ function renderForecastDataLayer() {
 function clearMapLayers() {
   if (!mapInstance) return;
   if (mapLayers.pastTrack) mapInstance.removeLayer(mapLayers.pastTrack);
+  mapLayers.pastTrackMarkers.forEach(marker => mapInstance.removeLayer(marker));
+  mapLayers.pastTrackMarkers = [];
   if (mapLayers.forecastTrack) mapInstance.removeLayer(mapLayers.forecastTrack);
   if (mapLayers.cone95) mapInstance.removeLayer(mapLayers.cone95);
   if (mapLayers.cone68) mapInstance.removeLayer(mapLayers.cone68);
@@ -719,19 +1653,21 @@ function updateWindRadii(lat, lng, kts) {
 
 // 7. Time Scrubber & Simulation
 function setForecastHour(targetHour) {
-  currentForecastHour = targetHour;
   const scenario = SCENARIOS[currentScenarioKey];
-  
-  // Find matching forecast point or interpolate
   const track = scenario.forecastTrack;
   let pt = track.find(p => p.hour === targetHour);
   if (!pt) {
-    // Pick nearest
     pt = track.reduce((prev, curr) => Math.abs(curr.hour - targetHour) < Math.abs(prev.hour - targetHour) ? curr : prev);
   }
+  targetHour = pt.hour;
+  currentForecastHour = targetHour;
 
   // Update slider input
-  document.getElementById('timeSlider').value = targetHour;
+  const timeSlider = document.getElementById('timeSlider');
+  if (timeSlider) {
+    timeSlider.value = targetHour;
+    timeSlider.style.setProperty('--forecast-progress', `${(targetHour / 72) * 100}%`);
+  }
 
   // Update timeline ticks active style
   document.querySelectorAll('.timeline-labels span').forEach(sp => sp.classList.remove('active-tick'));
@@ -741,7 +1677,8 @@ function setForecastHour(targetHour) {
   // Update scrubber header tags
   const forecastTimeTag = document.getElementById('forecastTimeTag');
   if (forecastTimeTag) {
-    forecastTimeTag.textContent = pt.time || `T+${targetHour}h`;
+    const details = getScenarioForecastDetails(targetHour);
+    forecastTimeTag.textContent = targetHour === 0 ? `NOW · ${details.time}` : `T+${targetHour}h · ${details.time}`;
     forecastTimeTag.className = `forecast-tag ${targetHour === 0 ? 'now' : (targetHour <= 24 ? 'warn' : 'past')}`;
   }
   const forecastDistanceTag = document.getElementById('forecastDistanceTag');
@@ -770,7 +1707,7 @@ function setForecastHour(targetHour) {
   }
 
   // Update Radii
-  updateWindRadii(pt.lat, pt.lng, pt.kts);
+  if (!selectedLiveStorm) updateWindRadii(pt.lat, pt.lng, pt.kts);
 
   // Update Compass Rose
   const compassNeedle = document.getElementById('compassNeedle');
@@ -790,19 +1727,26 @@ function setForecastHour(targetHour) {
   syncObsToForecastHour(obsStepForHour, pt);
 
   // ── FLOW STEP 3: Update Center-Fix panel & map markers ──
-  updateCenterFix(pt);
+  if (!selectedLiveStorm) updateCenterFix(pt);
 
   // ── FLOW STEP 4 → 5: Update Near-Coast RI Watch dashboard card & map hazard connection ──
-  updateNearCoastRiWatch(pt);
+  if (!selectedLiveStorm) updateNearCoastRiWatch(pt);
 
   // ── FLOW STEP 6: Update Forecast Point Details Display in Card 3 ──
   updateForecastPointDetails(targetHour);
+  updateStormIntelPanel();
+  updatePrototypeOverlays(pt);
+  if (activeWeatherVariable) {
+    const cached = weatherGridCache.get(weatherGridKey());
+    if (cached) renderWeatherGrid(cached.points, cached.data, activeWeatherVariable);
+  }
 
   // Update Chart Cursor
   updateChartCursor(targetHour);
 
   // Update pipeline flow indicator UI
   updateFlowPipeline(targetHour, pt);
+  updateOperationalStatus();
 }
 
 function updateHUD(pt) {
@@ -1672,13 +2616,7 @@ function updateInnovation3(scenario) {
  * Update the details inspection box in Card 3 for the given hour
  */
 function updateForecastPointDetails(hour) {
-  // Find exact or closest forecast point
-  let p = PROBABILISTIC_FORECAST_POINTS.find(item => item.hour === hour);
-  if (!p) {
-    p = PROBABILISTIC_FORECAST_POINTS.reduce((prev, curr) =>
-      Math.abs(curr.hour - hour) < Math.abs(prev.hour - hour) ? curr : prev
-    );
-  }
+  const p = getScenarioForecastDetails(hour);
   if (!p) return;
 
   // Highlight selector chip
@@ -1700,16 +2638,17 @@ function updateForecastPointDetails(hour) {
 
   if (fiHourTitle) fiHourTitle.textContent = `${p.hour} HOURS`;
   if (fiForecastTime) fiForecastTime.textContent = p.time;
-  if (fiConfidenceVal) fiConfidenceVal.textContent = `${p.confidence}%`;
+  if (fiConfidenceVal) fiConfidenceVal.textContent = p.confidenceLabel;
   if (fiWindSpeed) fiWindSpeed.textContent = `${p.windKmh} km/h`;
   if (fiWindKts) fiWindKts.textContent = `(${p.kts} kts)`;
   const fiWindUnc = document.getElementById('fiWindUncertainty');
-  if (fiWindUnc) fiWindUnc.textContent = p.uncertaintyRange || '±15 km/h';
-  if (fiConfidence) fiConfidence.textContent = `${p.confidence}%`;
+  if (fiWindUnc) fiWindUnc.textContent = p.uncertainty.split('•')[0].trim();
+  if (fiConfidence) fiConfidence.textContent = p.confidenceLabel;
   if (fiConfBar) fiConfBar.style.width = `${p.confidence}%`;
-  if (fiConeWidth) fiConeWidth.textContent = `±${p.coneRadiusKm} km`;
+  const coneWidth = p.uncertainty.match(/±\s*([\d.]+)\s*km\s*cone/i);
+  if (fiConeWidth) fiConeWidth.textContent = coneWidth ? `±${coneWidth[1]} km` : 'Not supplied';
   if (fiStatusText) {
-    fiStatusText.textContent = p.isLandfall ? 'DIRECT LANDFALL' : (p.hour >= 48 ? 'Inland Track' : 'Approaching Coast');
+    fiStatusText.textContent = p.isLandfall ? 'DIRECT LANDFALL' : (p.status || (p.hour >= 48 ? 'Inland Track' : 'Forecast track'));
     fiStatusText.className = p.isLandfall ? 'fi-metric-val text-red' : (p.hour === 0 ? 'fi-metric-val text-yellow' : 'fi-metric-val');
   }
   if (fiImpactZone) fiImpactZone.textContent = p.status;
@@ -1729,7 +2668,7 @@ function selectForecastPoint(hour) {
   setForecastHour(hour);
 
   // Open corresponding map popup
-  const idx = PROBABILISTIC_FORECAST_POINTS.findIndex(item => item.hour === hour);
+  const idx = SCENARIOS[currentScenarioKey].forecastTrack.findIndex(item => item.hour === hour);
   if (idx !== -1 && mapLayers.forecastPointMarkers && mapLayers.forecastPointMarkers[idx]) {
     mapLayers.forecastPointMarkers[idx].openPopup();
   }
@@ -1745,7 +2684,7 @@ function setupEventHandlers() {
 
   // Scenario Switcher
   const selector = document.getElementById('scenarioSelector');
-  selector.addEventListener('change', (e) => {
+  if (selector) selector.addEventListener('change', (e) => {
     stopDemo();
     stopPlay();
     loadScenario(e.target.value);
@@ -1753,14 +2692,14 @@ function setupEventHandlers() {
 
   // Time Slider
   const slider = document.getElementById('timeSlider');
-  slider.addEventListener('input', (e) => {
+  if (slider) slider.addEventListener('input', (e) => {
     stopPlay();
     setForecastHour(parseInt(e.target.value, 10));
   });
 
   // Play / Pause Button
   const playBtn = document.getElementById('playBtn');
-  playBtn.addEventListener('click', () => {
+  if (playBtn) playBtn.addEventListener('click', () => {
     if (isPlaying) {
       stopPlay();
     } else {
@@ -1804,8 +2743,9 @@ function setupEventHandlers() {
   const recenterMapBtn = document.getElementById('recenterMapBtn');
   if (recenterMapBtn) {
     recenterMapBtn.addEventListener('click', () => {
-      if (mapInstance && mapLayers.stormMarker) {
-        const latlng = mapLayers.stormMarker.getLatLng();
+      const marker = selectedLiveStorm?.liveMarker || mapLayers.stormMarker;
+      if (mapInstance && marker) {
+        const latlng = marker.getLatLng();
         mapInstance.setView(latlng, 7, { animate: true });
       }
     });
@@ -1840,19 +2780,33 @@ function setupEventHandlers() {
   // Layer Toggles
   document.getElementById('toggleConeBtn').addEventListener('click', (e) => {
     layerVisibility.cone = !layerVisibility.cone;
-    e.target.classList.toggle('active', layerVisibility.cone);
+    setLayerButtonState(e.currentTarget, layerVisibility.cone);
+    applyLayerVisibility();
+  });
+
+  const pastTrackBtn = document.getElementById('togglePastTrackBtn');
+  if (pastTrackBtn) pastTrackBtn.addEventListener('click', (e) => {
+    layerVisibility.pastTrack = !layerVisibility.pastTrack;
+    setLayerButtonState(e.currentTarget, layerVisibility.pastTrack);
     applyLayerVisibility();
   });
 
   document.getElementById('toggleEnsembleBtn').addEventListener('click', (e) => {
     layerVisibility.ensemble = !layerVisibility.ensemble;
-    e.target.classList.toggle('active', layerVisibility.ensemble);
+    setLayerButtonState(e.currentTarget, layerVisibility.ensemble);
     applyLayerVisibility();
   });
 
   document.getElementById('toggleRadiiBtn').addEventListener('click', (e) => {
     layerVisibility.radii = !layerVisibility.radii;
-    e.target.classList.toggle('active', layerVisibility.radii);
+    setLayerButtonState(e.currentTarget, layerVisibility.radii);
+    applyLayerVisibility();
+  });
+
+  const coastBtn = document.getElementById('toggleCoastBtn');
+  if (coastBtn) coastBtn.addEventListener('click', (e) => {
+    layerVisibility.coastalBuffer = !layerVisibility.coastalBuffer;
+    setLayerButtonState(e.currentTarget, layerVisibility.coastalBuffer);
     applyLayerVisibility();
   });
 
@@ -1860,7 +2814,7 @@ function setupEventHandlers() {
   if (riWatchBtn) {
     riWatchBtn.addEventListener('click', (e) => {
       layerVisibility.riWatch = !layerVisibility.riWatch;
-      e.target.classList.toggle('active', layerVisibility.riWatch);
+      setLayerButtonState(e.currentTarget, layerVisibility.riWatch);
       applyLayerVisibility();
     });
   }
@@ -1870,10 +2824,48 @@ function setupEventHandlers() {
   if (pointsBtn) {
     pointsBtn.addEventListener('click', (e) => {
       layerVisibility.waypoints = !layerVisibility.waypoints;
-      e.target.classList.toggle('active', layerVisibility.waypoints);
+      setLayerButtonState(e.currentTarget, layerVisibility.waypoints);
       applyLayerVisibility();
     });
   }
+
+  [
+    ['toggleDetectionBtn', 'detection'],
+    ['toggleExplainabilityBtn', 'explainability'],
+    ['toggleImpactZoneBtn', 'impactZone']
+  ].forEach(([buttonId, layerKey]) => {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    button.addEventListener('click', event => {
+      layerVisibility[layerKey] = !layerVisibility[layerKey];
+      setLayerButtonState(event.currentTarget, layerVisibility[layerKey]);
+      const scenario = SCENARIOS[currentScenarioKey];
+      const point = scenario.forecastTrack.find(item => item.hour === currentForecastHour) || scenario.forecastTrack[0];
+      updatePrototypeOverlays(point);
+    });
+  });
+
+  document.querySelectorAll('[data-weather-variable]').forEach(button => {
+    button.addEventListener('click', () => setWeatherVariable(button.dataset.weatherVariable));
+  });
+  const satelliteSelector = document.getElementById('satelliteLayerSelect');
+  if (satelliteSelector) satelliteSelector.addEventListener('change', event => setSatelliteLayer(event.target.value));
+  document.getElementById('weatherModelIcon')?.addEventListener('click', () => setWeatherModel('icon_seamless'));
+  document.getElementById('weatherModelGfs')?.addEventListener('click', () => setWeatherModel('ncep_gfs_seamless'));
+  document.querySelectorAll('.timeline-labels .tick').forEach(tick => {
+    tick.setAttribute('role', 'button');
+    tick.setAttribute('tabindex', '0');
+    tick.addEventListener('click', () => {
+      stopPlay();
+      setForecastHour(Number(tick.dataset.hour));
+    });
+    tick.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        tick.click();
+      }
+    });
+  });
 
   // Forecast Point Chips Click Handlers
   document.querySelectorAll('.fc-pt-chip').forEach(chip => {
@@ -1904,6 +2896,86 @@ function setupEventHandlers() {
 
   // Initialize flow pipeline on load
   updateFlowPipeline(0, SCENARIOS[currentScenarioKey].forecastTrack[0]);
+
+  setupMapActionHandlers();
+}
+
+function setLayerButtonState(button, isActive) {
+  if (!button) return;
+  button.classList.toggle('active', isActive);
+  button.setAttribute('aria-pressed', String(isActive));
+}
+
+function setupMapActionHandlers() {
+  const worldViewBtn = document.getElementById('mapWorldViewBtn');
+  if (worldViewBtn) worldViewBtn.addEventListener('click', () => {
+    if (mapInstance) mapInstance.fitBounds([[-55, -180], [75, 180]], { animate: true, padding: [12, 12] });
+  });
+
+  const locateBtn = document.getElementById('mapLocateStormBtn');
+  if (locateBtn) locateBtn.addEventListener('click', () => {
+    if (!mapInstance) return;
+    const target = selectedLiveStorm?.liveMarker || mapLayers.stormMarker;
+    if (target) mapInstance.setView(target.getLatLng(), Math.max(7, mapInstance.getZoom()), { animate: true });
+  });
+
+  const refreshBtn = document.getElementById('mapRefreshBtn');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    stopDemo();
+    stopPlay();
+    stopObsPlay();
+    refreshLiveCyclones();
+    if (!selectedLiveStorm) loadScenario(currentScenarioKey);
+    else updateOperationalStatus();
+    if (activeWeatherVariable) loadWeatherGrid();
+    if (mapInstance) mapInstance.invalidateSize();
+  });
+
+  const fullscreenBtn = document.getElementById('mapFullscreenBtn');
+  const dashboard = document.getElementById('page-dashboard');
+  if (fullscreenBtn && dashboard) {
+    const getFullscreenTarget = () => {
+      if (activePage === 'dashboard') return dashboard;
+      const wrapper = document.querySelector('.dash-map-wrapper');
+      return wrapper?.closest('.body-col-main') || wrapper || dashboard;
+    };
+
+    fullscreenBtn.addEventListener('click', async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await getFullscreenTarget().requestFullscreen();
+      } catch (error) {
+        console.warn('Map fullscreen is unavailable in this browser context.', error);
+      }
+    });
+    document.addEventListener('fullscreenchange', () => {
+      const active = document.fullscreenElement === getFullscreenTarget();
+      fullscreenBtn.setAttribute('aria-pressed', String(active));
+      fullscreenBtn.setAttribute('aria-label', active ? 'Exit map fullscreen' : 'Enter map fullscreen');
+      fullscreenBtn.title = active ? 'Exit map fullscreen' : 'Enter map fullscreen';
+      if (mapInstance) setTimeout(() => mapInstance.invalidateSize(), 60);
+    });
+  }
+
+  const layerPanel = document.getElementById('mapLayerPanel');
+  const layerPanelToggle = document.getElementById('layerPanelToggle');
+  if (layerPanel && layerPanelToggle) {
+    if (window.matchMedia && window.matchMedia('(max-width: 680px)').matches) {
+      layerPanel.classList.add('is-collapsed');
+      layerPanelToggle.setAttribute('aria-expanded', 'false');
+      layerPanelToggle.setAttribute('aria-label', 'Expand map overlays');
+      layerPanelToggle.title = 'Expand map overlays';
+      layerPanelToggle.textContent = '+';
+    }
+
+    layerPanelToggle.addEventListener('click', () => {
+      const collapsed = layerPanel.classList.toggle('is-collapsed');
+      layerPanelToggle.setAttribute('aria-expanded', String(!collapsed));
+      layerPanelToggle.setAttribute('aria-label', collapsed ? 'Expand map overlays' : 'Collapse map overlays');
+      layerPanelToggle.title = collapsed ? 'Expand map overlays' : 'Collapse map overlays';
+      layerPanelToggle.textContent = collapsed ? '+' : '−';
+    });
+  }
 }
 
 /**
@@ -1955,6 +3027,22 @@ function selectSatelliteSource(sourceKey) {
 
 function applyLayerVisibility() {
   if (!mapInstance) return;
+  if (selectedLiveStorm) {
+    hideScenarioMapLayersForLiveStorm();
+    return;
+  }
+  if (mapLayers.pastTrack) {
+    if (layerVisibility.pastTrack) mapInstance.addLayer(mapLayers.pastTrack);
+    else mapInstance.removeLayer(mapLayers.pastTrack);
+  }
+  mapLayers.pastTrackMarkers.forEach(marker => {
+    if (layerVisibility.pastTrack) mapInstance.addLayer(marker);
+    else mapInstance.removeLayer(marker);
+  });
+  if (mapLayers.coastalBuffer) {
+    if (layerVisibility.coastalBuffer) mapInstance.addLayer(mapLayers.coastalBuffer);
+    else mapInstance.removeLayer(mapLayers.coastalBuffer);
+  }
   if (mapLayers.cone95) {
     if (layerVisibility.cone) mapInstance.addLayer(mapLayers.cone95);
     else mapInstance.removeLayer(mapLayers.cone95);
@@ -2000,9 +3088,10 @@ function startPlay() {
   isPlaying = true;
   document.getElementById('playBtn').textContent = '❚❚';
   playInterval = setInterval(() => {
-    let nextHour = currentForecastHour + 6;
-    if (nextHour > 72) nextHour = 0;
-    setForecastHour(nextHour);
+    const forecastHours = SCENARIOS[currentScenarioKey].forecastTrack.map(point => point.hour);
+    const currentIndex = forecastHours.indexOf(currentForecastHour);
+    const nextIndex = currentIndex < 0 || currentIndex === forecastHours.length - 1 ? 0 : currentIndex + 1;
+    setForecastHour(forecastHours[nextIndex]);
   }, 1400);
 }
 
@@ -2022,7 +3111,7 @@ function startClock() {
     const utcMins = String(now.getUTCMinutes()).padStart(2, '0');
     const clockEl = document.getElementById('liveClock');
     if (clockEl) {
-      clockEl.textContent = `LIVE: ${utcHours}:${utcMins} UTC`;
+      clockEl.textContent = `UTC ${utcHours}:${utcMins}`;
     }
   }, 1000);
 }
@@ -2777,22 +3866,23 @@ function switchPage(pageId) {
   if (targetPage) targetPage.classList.add('active');
 
   // Handle Map Reparenting (Leaflet can only render in one container at a time)
-  const mapEl = document.getElementById('cycloneMap');
-  const dashMapWrapper = document.querySelector('.dash-map-wrapper');
+  const mapWrapper = document.querySelector('.dash-map-wrapper');
+  const dashMapCard = document.querySelector('.dash-map-card');
   const trackingMapContainer = document.getElementById('tracking-map-container');
   const forecastMapContainer = document.getElementById('fc-map-container');
 
-  if (pageId === 'dashboard' && dashMapWrapper && mapEl) {
-    dashMapWrapper.insertBefore(mapEl, dashMapWrapper.firstChild);
-  } else if (pageId === 'tracking' && trackingMapContainer && mapEl) {
-    trackingMapContainer.appendChild(mapEl);
-  } else if (pageId === 'forecast' && forecastMapContainer && mapEl) {
-    forecastMapContainer.appendChild(mapEl);
+  if (pageId === 'dashboard' && dashMapCard && mapWrapper) {
+    dashMapCard.appendChild(mapWrapper);
+  } else if (pageId === 'tracking' && trackingMapContainer && mapWrapper) {
+    trackingMapContainer.appendChild(mapWrapper);
+  } else if (pageId === 'forecast' && forecastMapContainer && mapWrapper) {
+    forecastMapContainer.appendChild(mapWrapper);
   }
 
   if (mapInstance && (pageId === 'dashboard' || pageId === 'tracking' || pageId === 'forecast')) {
     setTimeout(() => mapInstance.invalidateSize(), 60);
   }
+  updateOperationalStatus();
 
   // Populate data for the target page
   if (pageId === 'dashboard') populateDashboard();

@@ -31,8 +31,8 @@
         </svg>
       </div>
       <div class="top-brand-text">
-        <div class="top-brand-title">VayuDrishti</div>
-        <div class="top-brand-subtitle">AI-Powered Cyclone Intelligence</div>
+        <div class="top-brand-title">VAYUDRISHTI</div>
+        <div class="top-brand-subtitle">AI CYCLONE INTELLIGENCE</div>
       </div>
     </div>
 
@@ -52,7 +52,7 @@
         <option value="bay_of_bengal">Scenario 1: Bay of Bengal (Explosive Near-Coast RI)</option>
         <option value="arabian_sea">Scenario 2: Arabian Sea (Curving Coastal Threat)</option>
       </select>
-      <span class="top-sim-badge">SIMULATION MODE</span>
+      <span id="topDataModeBadge" class="top-sim-badge">SCENARIO / DEMO</span>
       <span class="top-updated-text" id="liveClock">Last Updated: 25/09/2026 11:00 IST</span>
     </div>
   </header>
@@ -116,7 +116,7 @@
               </div>
               <div class="card-header-meta">
                 <span class="header-meta-sub" id="dashMapSub">Historical Track + 0–72h Forecast + Uncertainty Cone</span>
-                <span class="header-live-badge">● LIVE SYNC</span>
+                <span class="header-live-badge">SCENARIO SYNC</span>
               </div>
             </div>
 
@@ -125,14 +125,98 @@
 
 
               <!-- Map Layer Toggles -->
-              <div class="map-layer-controls">
-                <button id="toggleConeBtn" class="toggle-chip active" title="Toggle 68% & 95% Uncertainty Cones">Cone</button>
-                <button id="togglePastTrackBtn" class="toggle-chip active" title="Toggle Observed Past Track">Past Track</button>
-                <button id="togglePointsBtn" class="toggle-chip active" title="Toggle Forecast Waypoints">Waypoints</button>
-                <button id="toggleRadiiBtn" class="toggle-chip active" title="Toggle 34/50/64kt Wind Radii">Wind Radii</button>
-                <button id="toggleEnsembleBtn" class="toggle-chip active" title="Toggle Ensemble Lines">Ensembles</button>
-                <button id="toggleCoastBtn" class="toggle-chip active" title="Toggle Coastal Buffer">Coastal Buffer</button>
-                <button id="toggleRiWatchBtn" class="toggle-chip active" title="Toggle RI Watch">RI Watch</button>
+              <div class="map-layer-controls" id="mapLayerPanel">
+                <div class="layer-panel-heading">
+                  <div>
+                    <span class="layer-panel-title">MAP OVERLAYS</span>
+                    <span class="layer-panel-subtitle">Scenario layers</span>
+                  </div>
+                  <button id="layerPanelToggle" class="layer-panel-collapse" type="button" aria-label="Collapse map overlays" aria-expanded="true" title="Collapse map overlays">−</button>
+                </div>
+                <div class="layer-panel-content">
+                  <span class="layer-group-label">SATELLITE</span>
+                  <label class="sr-only" for="satelliteLayerSelect">Satellite imagery layer</label>
+                  <select id="satelliteLayerSelect" class="layer-select" aria-label="Satellite imagery layer">
+                    <option value="dark">Dark map</option>
+                    <option value="himawari-visible">Himawari-9 visible · 10 min</option>
+                    <option value="himawari-infrared">Himawari-9 infrared · 10 min</option>
+                    <option value="viirs-true-color">VIIRS true color · daily NRT</option>
+                  </select>
+
+                  <span class="layer-group-label">FORECAST · OPEN-METEO</span>
+                  <div class="model-switcher" role="group" aria-label="Forecast model">
+                    <span class="model-switcher-label">MODEL</span>
+                    <button id="weatherModelIcon" class="model-option active" type="button" aria-pressed="true">ICON</button>
+                    <button id="weatherModelGfs" class="model-option" type="button" aria-pressed="false">GFS</button>
+                  </div>
+                  <div class="weather-layer-grid" role="group" aria-label="Forecast variable">
+                    <button class="weather-layer-choice" type="button" data-weather-variable="precipitation">Precipitation</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="wind_speed_10m">Wind speed</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="wind_gusts_10m">Wind gusts</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="temperature_2m">Temperature</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="apparent_temperature">Feels like</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="relative_humidity_2m">Humidity</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="dew_point_2m">Dew point</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="wet_bulb_temperature_2m">Wet bulb</button>
+                    <button class="weather-layer-choice" type="button" data-weather-variable="surface_pressure">Pressure</button>
+                  </div>
+                  <div id="weatherLayerStatus" class="layer-data-status" aria-live="polite">Choose a variable to load forecast grid</div>
+
+                  <span class="layer-group-label">TRACK &amp; HAZARDS</span>
+                  <button id="toggleConeBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle 68% & 95% uncertainty cones">Forecast cone</button>
+                  <button id="togglePastTrackBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle observed past track">Observed track</button>
+                  <button id="togglePointsBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle forecast waypoints">Forecast points</button>
+                  <button id="toggleRadiiBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle 34/50/64 kt wind radii">Wind radii</button>
+                  <button id="toggleEnsembleBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle ensemble tracks">Ensemble tracks</button>
+                  <button id="toggleCoastBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle coastal buffer">Coastal buffer</button>
+                  <button id="toggleRiWatchBtn" class="toggle-chip active" type="button" aria-pressed="true" title="Toggle rapid-intensification watch overlay">RI watch</button>
+
+                  <span class="layer-group-label">AI OVERLAYS · PROTOTYPE</span>
+                  <button id="toggleDetectionBtn" class="toggle-chip" type="button" aria-pressed="false" title="Show scenario core locator, not a live model detection">Detection locator</button>
+                  <button id="toggleExplainabilityBtn" class="toggle-chip" type="button" aria-pressed="false" title="Show scenario explainability inputs around the selected center">Explainability inputs</button>
+                  <button id="toggleImpactZoneBtn" class="toggle-chip" type="button" aria-pressed="false" title="Show the scenario gale-wind impact proxy">Impact zone proxy</button>
+
+                  <span class="layer-group-label">ACTIVE CYCLONES · ESRI / NHC / JTWC</span>
+                  <div id="liveCycloneFeedStatus" class="layer-data-status" aria-live="polite">Loading live storm feed…</div>
+                  <div id="liveCycloneFeedList" class="live-cyclone-list" aria-label="Active cyclone list">
+                    <span class="live-cyclone-empty">Checking public storm feed</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="map-action-controls" role="toolbar" aria-label="Map controls">
+                <button id="mapWorldViewBtn" class="map-action-btn" type="button" aria-label="World view" title="World view">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path></svg>
+                </button>
+                <button id="mapLocateStormBtn" class="map-action-btn" type="button" aria-label="Locate selected storm" title="Locate selected storm">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg>
+                </button>
+                <button id="mapRefreshBtn" class="map-action-btn" type="button" aria-label="Refresh scenario display" title="Refresh scenario display (demo data)">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"></path><path d="M5.6 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12.4-3"></path></svg>
+                </button>
+                <button id="mapFullscreenBtn" class="map-action-btn" type="button" aria-label="Enter map fullscreen" aria-pressed="false" title="Enter map fullscreen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"></path></svg>
+                </button>
+              </div>
+
+              <div class="map-operational-status" aria-live="polite">
+                <span class="status-mode-dot"></span>
+                <span id="mapOperationalStatus">SIMULATION MODE · DEMO DATA</span>
+              </div>
+              <div class="map-coordinate-readout" aria-live="polite">
+                <span>MAP COORDINATES</span>
+                <strong id="mapPointerCoordinates">—</strong>
+              </div>
+
+              <div id="mapWeatherLegend" class="map-weather-legend" hidden aria-live="polite">
+                <div class="weather-legend-title" id="weatherLegendTitle">FORECAST</div>
+                <div class="weather-legend-scale"><span id="weatherLegendMin"></span><i></i><span id="weatherLegendMax"></span></div>
+                <div class="weather-legend-source" id="weatherLegendSource">Open-Meteo · ICON</div>
+              </div>
+
+              <div class="map-data-attribution" aria-label="Data source attribution">
+                <span><a href="https://earthdata.nasa.gov/data/tools/gibs" target="_blank" rel="noopener">NASA GIBS</a> · <a href="https://open-meteo.com/en/docs" target="_blank" rel="noopener">Open-Meteo</a> · <a href="https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/Active_Hurricanes_v1/FeatureServer" target="_blank" rel="noopener">Esri</a> · <a href="https://www.nhc.noaa.gov/" target="_blank" rel="noopener">NOAA / NHC</a> · <a href="https://www.metoc.navy.mil/jtwc/jtwc.html" target="_blank" rel="noopener">JTWC</a></span>
+                <span><a href="https://www.jma.go.jp/jma/indexe.html" target="_blank" rel="noopener">JMA (no connected feed)</a> · © CARTO / OpenStreetMap</span>
               </div>
 
               <!-- Map Wind Radii Legend -->
@@ -197,6 +281,36 @@
 
           <!-- RIGHT SIDE: RAPID CHANGE + 72H SUMMARY -->
           <div class="dash-right-stack">
+
+            <section class="dash-panel-card storm-intel-card" aria-label="Selected cyclone intelligence">
+              <div class="card-header-bar">
+                <div class="card-header-title"><span>CYCLONE INTELLIGENCE</span></div>
+                <span id="stormDetailSource" class="storm-detail-source">SCENARIO</span>
+              </div>
+              <div class="storm-intel-content">
+                <div class="storm-intel-title-row">
+                  <div><strong id="stormDetailName">VAJRA</strong><span id="stormDetailCategory">Very Severe Cyclonic Storm</span></div>
+                  <span id="stormDetailStatus" class="storm-detail-status">DEMO</span>
+                </div>
+                <div class="storm-intel-position" id="stormDetailPosition">18.2°N, 86.8°E</div>
+                <div class="storm-intel-metrics">
+                  <div><span>MAX WIND</span><strong id="stormDetailWind">121 km/h</strong></div>
+                  <div><span>PRESSURE</span><strong id="stormDetailPressure">972 hPa</strong></div>
+                  <div><span>CATEGORY</span><strong id="stormDetailIntensity">VSCS</strong></div>
+                  <div><span>DVORAK</span><strong id="stormDetailDvorak">Not supplied</strong></div>
+                </div>
+                <div class="storm-intel-classification">
+                  <span class="storm-intel-section-label">CLASSIFICATION INPUTS · PROTOTYPE</span>
+                  <p id="stormDetailClassification">Scenario CDO / inner-core diagnostics</p>
+                  <div id="stormDetailFeatureChips" class="storm-feature-chips" aria-label="Available cyclone pattern inputs"></div>
+                  <span id="stormDetailRiRisk" class="storm-ri-risk">Rapid-intensification risk: scenario estimate</span>
+                </div>
+                <div class="storm-intel-chart-wrap">
+                  <span class="storm-intel-section-label">SCENARIO INTENSITY GUIDANCE</span>
+                  <svg id="stormIntensityPlot" viewBox="0 0 240 44" role="img" aria-label="Scenario intensity guidance chart"></svg>
+                </div>
+              </div>
+            </section>
 
             <!-- SECTION 3 — RAPID CHANGE STATUS -->
             <section class="dash-panel-card" aria-label="Rapid Change Status">
@@ -403,21 +517,17 @@
         <!-- SECTION 7 — DATA STATUS STRIP -->
         <footer class="dash-data-bar" aria-label="System Data Status">
           <div class="dd-left">
-            <span class="dd-title">DATA STATUS:</span>
+            <span class="dd-title">DATA MODE:</span>
             <div class="dd-sensors">
-              <span class="dd-sensor"><span class="dot-live"></span> Satellite</span>
+              <span class="dd-sensor">Satellite fixtures</span>
               <span class="dd-sep">•</span>
-              <span class="dd-sensor"><span class="dot-live"></span> Meteorological</span>
+              <span class="dd-sensor">Scenario data</span>
               <span class="dd-sep">•</span>
-              <span class="dd-sensor"><span class="dot-live"></span> Ocean</span>
-              <span class="dd-sep">•</span>
-              <span class="dd-sensor"><span class="dot-live"></span> AI Model</span>
-              <span class="dd-sep">•</span>
-              <span class="dd-sensor"><span class="dot-live"></span> Forecast</span>
+              <span class="dd-sensor">Prototype AI</span>
             </div>
           </div>
           <div class="dd-right">
-            <span class="dd-status-text">SIMULATION MODE / DEMO DATA</span>
+            <span class="dd-status-text">SIMULATION MODE · NOT LIVE</span>
           </div>
         </footer>
 
@@ -993,15 +1103,15 @@
     <span id="flowNodeSDMA"></span>
     <span id="flowStatusLabel"></span>
     <!-- advisory elements -->
-    <span id="advCycloneStatus"></span>
-    <span id="advIntensity"></span>
-    <span id="advRiProb"></span>
-    <span id="advCoastRisk"></span>
-    <span id="advForecastWindow"></span>
-    <span id="advCenterConf"></span>
-    <span id="advLatestObs"></span>
-    <span id="advLandfall"></span>
-    <span id="advMonitoring"></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
     <span id="hudWindSpeed"></span>
     <span id="hudCoords"></span>
     <span id="hudPressure"></span>
@@ -1046,19 +1156,19 @@
     <span id="fusionSrcInsat"></span>
     <span id="fusionSrcMicrowave"></span>
     <span id="fusionSrcOscat"></span>
-    <span id="rapidAlertText" class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
     <span id="subminAlert"></span>
     <span id="subminCoastRisk"></span>
     <span id="subminNextObs"></span>
     <span id="subminHorizon"></span>
-    <span id="landfallSectors"></span>
+    <span></span>
     <span id="landfallEta-2" style="display:none"></span>
-    <span id="sdmaAlert" class="hidden-compat"></span>
-    <span id="sdmaRisk" class="hidden-compat"></span>
-    <span id="sdmaIntensification" class="hidden-compat"></span>
-    <span id="sdmaCoastDist" class="hidden-compat"></span>
-    <span id="sdmaWindow" class="hidden-compat"></span>
-    <span id="sdmaMonitoring" class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
+    <span class="hidden-compat"></span>
     <span id="chartHeaderText"></span>
   </div>
 
