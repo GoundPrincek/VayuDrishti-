@@ -161,6 +161,11 @@ let activeSatelliteLayer = 'dark';
 let activeWeatherVariable = null;
 let activeWeatherModel = 'icon_seamless';
 let selectedLiveStorm = null;
+let selectedLiveGlobeTracks = null;
+let currentGlobeWeatherCells = [];
+let mapVisualizationMode = '2d';
+let earthGlobeReady = false;
+let forecastPopupSequence = 0;
 let liveCyclones = [];
 let liveCycloneFeedState = 'loading';
 let weatherGridRequest = null;
@@ -168,7 +173,22 @@ let weatherGridZoomSuppressed = false;
 let liveCycloneRefreshTimer = null;
 const weatherGridCache = new Map();
 const weatherPointCache = new Map();
-const ESRI_STORM_SERVICE = 'https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/Active_Hurricanes_v1/FeatureServer';
+const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_WEATHER_FIELDS = {
+  temperature_2m: 'temperature',
+  apparent_temperature: 'apparentTemperature',
+  relative_humidity_2m: 'humidity',
+  dew_point_2m: 'dewPoint',
+  precipitation: 'precipitation',
+  wind_speed_10m: 'windSpeed',
+  wind_gusts_10m: 'windGust',
+  wind_direction_10m: 'windDirection',
+  surface_pressure: 'pressure',
+  wet_bulb_temperature_2m: 'wetBulb'
+};
+const WEATHER_FIELD_TO_BACKEND = {
+  ...Object.fromEntries(Object.entries(BACKEND_WEATHER_FIELDS).map(([frontendName, backendName]) => [frontendName, frontendName === 'surface_pressure' ? 'pressure_msl' : frontendName]))
+};
 const WEATHER_VARIABLES = {
   precipitation: { label: 'Precipitation', unit: 'mm', min: 0, max: 40, stops: ['#102a67', '#1686c9', '#1bc2bd', '#9acb55', '#ffd34e', '#f36b38', '#d83259'] },
   wind_speed_10m: { label: 'Wind speed', unit: 'km/h', min: 0, max: 80, stops: ['#143874', '#148bbd', '#38c8aa', '#d7db61', '#ef9b49', '#e04a58'] },
@@ -280,11 +300,197 @@ const SATELLITE_SOURCES = {
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   loadScenario(currentScenarioKey);
+  initializeEarthGlobe();
   setupEventHandlers();
   startClock();
   refreshLiveCyclones();
   liveCycloneRefreshTimer = setInterval(refreshLiveCyclones, 10 * 60 * 1000);
 });
+
+function updateMapPointerCoordinates(latitude, longitude) {
+  const coordsEl = document.getElementById('mapPointerCoordinates');
+  if (!coordsEl || !Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) return;
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  const latHemisphere = lat < 0 ? 'S' : 'N';
+  const lngHemisphere = lng < 0 ? 'W' : 'E';
+  coordsEl.textContent = `${Math.abs(lat).toFixed(2)}°${latHemisphere}, ${Math.abs(lng).toFixed(2)}°${lngHemisphere}`;
+}
+
+function interpolateLiveForecastPosition(hour, forecastPoints = []) {
+  const points = forecastPoints.filter(point => Number.isFinite(point.hour) && Number.isFinite(point.lat) && Number.isFinite(point.lng)).sort((a, b) => a.hour - b.hour);
+  if (!points.length) return null;
+  const target = Math.max(points[0].hour, Math.min(points[points.length - 1].hour, Number(hour) || 0));
+  const afterIndex = points.findIndex(point => point.hour >= target);
+  if (afterIndex <= 0) return { ...points[Math.max(0, afterIndex)] };
+  const before = points[afterIndex - 1];
+  const after = points[afterIndex];
+  const progress = (target - before.hour) / Math.max(1, after.hour - before.hour);
+  const longitudeDelta = ((after.lng - before.lng + 540) % 360) - 180;
+  return {
+    lat: before.lat + (after.lat - before.lat) * progress,
+    lng: ((before.lng + longitudeDelta * progress + 540) % 360) - 180,
+    hour: target
+  };
+}
+
+function getEarthMarkerLabelBounds() {
+  const wrapper = document.querySelector('.dash-map-wrapper');
+  const layerPanel = document.getElementById('mapLayerPanel');
+  const stormPanel = document.querySelector('.dash-right-stack');
+  if (!wrapper) return null;
+  const wrapperRect = wrapper.getBoundingClientRect();
+  let left = 12;
+  let right = wrapperRect.width - 12;
+  const layerRect = layerPanel?.getBoundingClientRect();
+  const stormRect = stormPanel?.getBoundingClientRect();
+  if (layerRect?.width > 0 && layerRect.width < wrapperRect.width * 0.48) left = Math.max(left, layerRect.right - wrapperRect.left + 10);
+  if (stormRect?.width > 0 && stormRect.width < wrapperRect.width * 0.48) right = Math.min(right, stormRect.left - wrapperRect.left - 10);
+  return right - left >= 150 ? { left, right } : { left: 12, right: wrapperRect.width - 12 };
+}
+
+function buildEarthGlobeState() {
+  const scenario = SCENARIOS[currentScenarioKey];
+  const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
+  const point = interpolateScenarioTrack(currentForecastHour, scenario);
+  const liveStorms = liveCyclones.map(storm => ({
+    name: storm.name,
+    basin: storm.basin,
+    category: storm.category,
+    maxWind: storm.maxWind,
+    lat: storm.lat,
+    lng: storm.lng,
+    color: stormMarkerColor(storm)
+  }));
+  const selectedStorm = selectedLiveStorm
+    ? {
+        kind: 'live',
+        name: selectedLiveStorm.name,
+        basin: selectedLiveStorm.basin,
+        category: selectedLiveStorm.category,
+        lat: selectedLiveStorm.lat,
+        lng: selectedLiveStorm.lng,
+        windKmh: selectedLiveStorm.maxWind == null ? null : selectedLiveStorm.maxWind * 1.60934,
+        color: stormMarkerColor(selectedLiveStorm)
+      }
+    : point
+      ? {
+          kind: 'scenario',
+          name: scenarioData?.name || scenario.name,
+          basin: scenarioData?.basin || 'Scenario track',
+          category: scenarioData?.category || scenario.category,
+          lat: point.lat,
+          lng: point.lng,
+          windKmh: (point.kts || 0) * 1.852,
+          color: '#fb7185'
+        }
+      : null;
+  const liveTracks = selectedLiveGlobeTracks
+    ? { ...selectedLiveGlobeTracks, forecastPosition: interpolateLiveForecastPosition(currentForecastHour, selectedLiveGlobeTracks.forecastPoints) }
+    : null;
+  let scenarioOverlay = null;
+
+  if (!selectedLiveStorm && scenario && point) {
+    const radii = scenarioData?.windRadii || {};
+    scenarioOverlay = {
+      position: { lat: point.lat, lng: point.lng },
+      forecastPosition: { lat: point.lat, lng: point.lng },
+      forecastTrack: scenario.forecastTrack.map(({ lat, lng, hour }) => ({ lat, lng, hour })),
+      pastTrack: scenario.pastTrack.map(({ lat, lng }) => ({ lat, lng })),
+      cone95: (scenario.cone95 || []).map(([lat, lng]) => ({ lat, lng })),
+      cone68: (scenario.cone68 || []).map(([lat, lng]) => ({ lat, lng })),
+      ensembles: (scenario.ensembles || []).map(line => ({ name: line.name, color: line.color, coords: line.coords.map(([lat, lng]) => ({ lat, lng })) })),
+      r34Km: Number(radii.r34_km) || 180,
+      r50Km: Number(radii.r50_km) || 95,
+      r64Km: Number(radii.r64_km) || 55,
+      explainabilityRadiusKm: Math.max(24, (point.eye || 20) * 2.5),
+      detectionHalfLat: Math.max(0.34, (point.eye || 20) / 110),
+      detectionHalfLng: Math.max(0.48, (point.eye || 20) / 80)
+    };
+  }
+
+  return {
+    storms: liveStorms,
+    selectedStorm,
+    scenario: scenarioOverlay,
+    liveTracks,
+    forecastHour: currentForecastHour,
+    weatherCells: currentGlobeWeatherCells,
+    labelBounds: getEarthMarkerLabelBounds(),
+    layers: {
+      pastTrack: layerVisibility.pastTrack,
+      forecastTrack: true,
+      cone: layerVisibility.cone,
+      ensemble: layerVisibility.ensemble,
+      waypoints: layerVisibility.waypoints,
+      radii: layerVisibility.radii,
+      detection: layerVisibility.detection,
+      explainability: layerVisibility.explainability,
+      impactZone: layerVisibility.impactZone
+    }
+  };
+}
+
+function syncEarthGlobe(focus = false) {
+  if (!earthGlobeReady || !window.VayuEarthGlobe) return;
+  window.VayuEarthGlobe.update(buildEarthGlobeState());
+  if (focus && mapVisualizationMode === 'globe') window.VayuEarthGlobe.focusSelected();
+}
+
+function initializeEarthGlobe() {
+  const modeButton = document.getElementById('mapModeGlobeBtn');
+  earthGlobeReady = Boolean(window.VayuEarthGlobe?.init({
+    host: document.getElementById('globeView'),
+    canvas: document.getElementById('globeCanvas'),
+    overlay: document.getElementById('globeOverlayCanvas'),
+    status: document.getElementById('globeStatus'),
+    onSelectStorm: selected => {
+      const storm = liveCyclones.find(item => item.name === selected.name && item.basin === selected.basin);
+      if (storm) selectLiveStorm(storm);
+    },
+    onMapClick: location => openForecastMapPopup({ lat: location.lat, lng: location.lng }, location),
+    onCoordinates: location => updateMapPointerCoordinates(location.lat, location.lng),
+    onFailure: () => setMapVisualizationMode('2d')
+  }));
+
+  if (modeButton && !earthGlobeReady) {
+    modeButton.disabled = true;
+    modeButton.title = '3D Earth is unavailable in this browser; the 2D Leaflet map remains active.';
+    modeButton.setAttribute('aria-label', '3D Earth unavailable in this browser');
+  }
+  syncEarthGlobe();
+}
+
+function setMapVisualizationMode(mode) {
+  const globe = mode === 'globe' && earthGlobeReady;
+  mapVisualizationMode = globe ? 'globe' : '2d';
+  const wrapper = document.querySelector('.dash-map-wrapper');
+  const globeView = document.getElementById('globeView');
+  const map = document.getElementById('cycloneMap');
+  const earthControls = document.getElementById('earthControlStack');
+  const forecastPopup = document.getElementById('globeForecastPopup');
+  const mapButton = document.getElementById('mapMode2dBtn');
+  const globeButton = document.getElementById('mapModeGlobeBtn');
+
+  wrapper?.classList.toggle('is-globe-mode', globe);
+  if (globeView) globeView.hidden = !globe;
+  map?.classList.toggle('globe-hidden', globe);
+  if (earthControls) earthControls.hidden = !globe;
+  if (!globe && forecastPopup) forecastPopup.hidden = true;
+  [[mapButton, !globe], [globeButton, globe]].forEach(([button, active]) => {
+    if (!button) return;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+
+  if (globe) {
+    syncEarthGlobe();
+    window.VayuEarthGlobe?.setVisible(true);
+    if (selectedLiveStorm || mapLayers.stormMarker) window.VayuEarthGlobe?.focusSelected();
+  } else if (mapInstance) {
+    requestAnimationFrame(() => mapInstance.invalidateSize());
+  }
+}
 
 // 4. Map Setup
 function initMap() {
@@ -301,20 +507,16 @@ function initMap() {
   mapInstance.createPane('gibsPane').style.zIndex = 250;
   mapInstance.createPane('weatherPane').style.zIndex = 340;
 
-  mapLayers.darkBasemap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  mapLayers.darkBasemap = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 18,
-    subdomains: 'abcd',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>'
+    attribution: '&copy; <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener">Esri and imagery providers</a>',
+    className: 'earth-basemap-tile'
   }).addTo(mapInstance);
 
   L.control.scale({ position: 'bottomright', metric: true, imperial: false }).addTo(mapInstance);
   mapInstance.on('mousemove', (event) => {
-    const coordsEl = document.getElementById('mapPointerCoordinates');
-    if (!coordsEl) return;
     const { lat, lng } = event.latlng;
-    const latHemisphere = lat < 0 ? 'S' : 'N';
-    const lngHemisphere = lng < 0 ? 'W' : 'E';
-    coordsEl.textContent = `${Math.abs(lat).toFixed(2)}°${latHemisphere}, ${Math.abs(lng).toFixed(2)}°${lngHemisphere}`;
+    updateMapPointerCoordinates(lat, lng);
   });
   mapInstance.on('click', event => openForecastMapPopup(event.latlng));
   mapInstance.on('moveend', () => {
@@ -400,6 +602,14 @@ function setSatelliteLayer(layerKey) {
     imageryLayer.on('load', () => setSatelliteStatus(`${layerConfig.title} · ${layerConfig.time}`, layerKey));
     imageryLayer.on('tileerror', () => setSatelliteStatus(`${layerConfig.name} unavailable for this date or view`, layerKey));
     mapLayers.satelliteImagery = imageryLayer.addTo(mapInstance);
+    const globeParams = new URLSearchParams({
+      SERVICE: 'WMS', REQUEST: 'GetMap', VERSION: '1.1.1', LAYERS: layerConfig.layer,
+      STYLES: '', SRS: 'EPSG:4326', BBOX: '-180,-90,180,90', WIDTH: '2048', HEIGHT: '1024',
+      FORMAT: 'image/png', TRANSPARENT: 'true', TIME: layerConfig.time
+    });
+    window.VayuEarthGlobe?.setTextureSource(`https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?${globeParams}`, `NASA GIBS · ${layerConfig.name}`);
+  } else {
+    window.VayuEarthGlobe?.setTextureSource();
   }
 
   updateOperationalStatus();
@@ -439,25 +649,49 @@ function forecastIndexFor(times, hourOffset) {
   return bestIndex;
 }
 
-function buildOpenMeteoUrl(coordinates, variables) {
-  const params = new URLSearchParams({
-    latitude: coordinates.map(point => point.lat.toFixed(2)).join(','),
-    longitude: coordinates.map(point => point.lng.toFixed(2)).join(','),
-    hourly: variables.join(','),
-    forecast_days: '4',
-    timezone: 'GMT',
-    wind_speed_unit: 'kmh',
-    models: activeWeatherModel
+function adaptBackendWeather(weather) {
+  const sourceHourly = weather?.hourly || {};
+  const hourly = { time: Array.isArray(sourceHourly.time) ? sourceHourly.time : [] };
+  Object.entries(BACKEND_WEATHER_FIELDS).forEach(([frontendName, backendName]) => {
+    hourly[frontendName] = Array.isArray(sourceHourly[backendName]) ? sourceHourly[backendName] : [];
   });
-  return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+  return { ...weather, hourly };
 }
 
-async function fetchOpenMeteo(coordinates, variables, signal) {
-  const response = await fetch(buildOpenMeteoUrl(coordinates, variables), { signal, headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Open-Meteo returned ${response.status}`);
-  const payload = await response.json();
-  if (payload && payload.error) throw new Error(payload.reason || 'Open-Meteo rejected the request');
-  return Array.isArray(payload) ? payload : [payload];
+async function requestBackendJson(path, options = {}) {
+  const response = await fetch(`${BACKEND_URL}${path}`, {
+    headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
+    ...options
+  });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error('Backend returned an invalid response');
+  }
+  if (!response.ok || payload?.error) throw new Error(payload?.message || 'Backend request failed');
+  return payload;
+}
+
+async function fetchWeatherFromBackend(coordinates, variables, signal) {
+  const hourly = variables.map(variable => WEATHER_FIELD_TO_BACKEND[variable]).filter(Boolean);
+  if (coordinates.length === 1) {
+    const point = coordinates[0];
+    const params = new URLSearchParams({ lat: String(point.lat), lon: String(point.lng), model: activeWeatherModel });
+    const payload = await requestBackendJson(`/api/weather?${params}`, { signal });
+    return [adaptBackendWeather(payload)];
+  }
+
+  const payload = await requestBackendJson('/api/weather/grid', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({
+      locations: coordinates.map(point => ({ latitude: point.lat, longitude: point.lng })),
+      model: activeWeatherModel,
+      hourly
+    })
+  });
+  return Array.isArray(payload.locations) ? payload.locations.map(adaptBackendWeather) : [];
 }
 
 function setWeatherVariable(variable) {
@@ -474,6 +708,8 @@ function setWeatherVariable(variable) {
   clearWeatherGrid();
   if (activeWeatherVariable) loadWeatherGrid();
   else {
+    currentGlobeWeatherCells = [];
+    syncEarthGlobe();
     setWeatherStatus('Forecast grid hidden');
     updateWeatherLegend(null);
     updateOperationalStatus();
@@ -509,6 +745,8 @@ async function loadWeatherGrid() {
   if (mapInstance.getZoom() < 5) {
     weatherGridZoomSuppressed = true;
     clearWeatherGrid();
+    currentGlobeWeatherCells = [];
+    syncEarthGlobe();
     setWeatherStatus('Zoom in to view the local forecast grid');
     updateWeatherLegend(null);
     return;
@@ -517,7 +755,7 @@ async function loadWeatherGrid() {
   const variable = activeWeatherVariable;
   const key = weatherGridKey();
   const cached = weatherGridCache.get(key);
-  if (cached && Date.now() - cached.savedAt < 20 * 60 * 1000) {
+  if (cached && Date.now() - cached.savedAt < 90 * 1000) {
     renderWeatherGrid(cached.points, cached.data, variable);
     return;
   }
@@ -537,7 +775,7 @@ async function loadWeatherGrid() {
   }
 
   try {
-    const data = await fetchOpenMeteo(points, [variable], requestController.signal);
+    const data = await fetchWeatherFromBackend(points, [variable], requestController.signal);
     if (weatherGridRequest !== requestController || variable !== activeWeatherVariable) return;
     const result = { points, data, savedAt: Date.now() };
     weatherGridCache.set(key, result);
@@ -546,6 +784,8 @@ async function loadWeatherGrid() {
     if (error.name === 'AbortError') return;
     if (weatherGridRequest !== requestController) return;
     clearWeatherGrid();
+    currentGlobeWeatherCells = [];
+    syncEarthGlobe();
     setWeatherStatus(`Forecast data unavailable · ${error.message}`);
     updateWeatherLegend(null);
   } finally {
@@ -566,7 +806,11 @@ function variableColor(variable, value) {
 
 function renderWeatherGrid(points, data, variable) {
   clearWeatherGrid();
-  if (!mapInstance || !activeWeatherVariable || variable !== activeWeatherVariable) return;
+  currentGlobeWeatherCells = [];
+  if (!mapInstance || !activeWeatherVariable || variable !== activeWeatherVariable) {
+    syncEarthGlobe();
+    return;
+  }
   const config = WEATHER_VARIABLES[variable];
   const collection = L.layerGroup();
   const forecastTimeIndex = forecastIndexFor(data[0]?.hourly?.time, currentForecastHour);
@@ -576,6 +820,13 @@ function renderWeatherGrid(points, data, variable) {
     const value = data[index]?.hourly?.[variable]?.[forecastTimeIndex];
     if (!Number.isFinite(value)) return;
     valid += 1;
+    currentGlobeWeatherCells.push({
+      lat: point.lat,
+      lng: point.lng,
+      latRadius: 0.5,
+      lngRadius: 0.5,
+      color: variableColor(variable, value)
+    });
     const cell = L.rectangle([
       [point.lat - 0.5, point.lng - 0.5],
       [point.lat + 0.5, point.lng + 0.5]
@@ -596,6 +847,7 @@ function renderWeatherGrid(points, data, variable) {
   const selectedTime = data[0]?.hourly?.time?.[forecastTimeIndex] || 'forecast time unavailable';
   setWeatherStatus(valid ? `${valid} forecast grid cells · ${modelLabel} · ${selectedTime} UTC` : 'No forecast values returned for this area');
   updateWeatherLegend(valid ? { variable, modelLabel } : null);
+  syncEarthGlobe();
 }
 
 function updateWeatherLegend(state) {
@@ -626,7 +878,7 @@ function formatWeatherValue(variable, value) {
   return `${Number(value).toFixed(digits)} ${config.unit}`;
 }
 
-async function openForecastMapPopup(latlng) {
+async function openForecastMapPopup(latlng, globePoint = null) {
   if (!mapInstance) return;
   const lat = Number(latlng.lat.toFixed(3));
   const lng = Number(latlng.lng.toFixed(3));
@@ -635,23 +887,42 @@ async function openForecastMapPopup(latlng) {
   const model = activeWeatherModel;
   const modelLabel = model === 'icon_seamless' ? 'ICON' : 'GFS';
   const forecastHour = currentForecastHour;
-  const popup = L.popup({ className: 'hud-leaflet-popup', maxWidth: 270 })
-    .setLatLng(latlng)
-    .setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="loading">Loading forecast · ${escapeHtml(config.label)} · ${modelLabel}…</div></div>`)
-    .openOn(mapInstance);
+  const requestSequence = ++forecastPopupSequence;
+  const loadingContent = `<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="loading">Loading forecast · ${escapeHtml(config.label)} · ${modelLabel}…</div></div>`;
+  let popup;
+
+  if (globePoint && mapVisualizationMode === 'globe') {
+    const element = document.getElementById('globeForecastPopup');
+    const globeView = document.getElementById('globeView');
+    if (!element || !globeView) return;
+    element.innerHTML = loadingContent;
+    element.hidden = false;
+    element.style.left = `${Math.max(8, Math.min(globePoint.screenX + 14, globeView.clientWidth - 294))}px`;
+    element.style.top = `${Math.max(8, Math.min(globePoint.screenY + 14, globeView.clientHeight - 260))}px`;
+    popup = {
+      setContent: content => { element.innerHTML = content; },
+      isOpen: () => !element.hidden && mapVisualizationMode === 'globe'
+    };
+  } else {
+    const leafletPopup = L.popup({ className: 'hud-leaflet-popup', maxWidth: 270 })
+      .setLatLng(latlng)
+      .setContent(loadingContent)
+      .openOn(mapInstance);
+    popup = leafletPopup;
+  }
 
   const cacheKey = `${model}:${lat.toFixed(1)}:${lng.toFixed(1)}`;
   let data = weatherPointCache.get(cacheKey);
   try {
-    if (!data || Date.now() - data.savedAt > 15 * 60 * 1000) {
-      const points = await fetchOpenMeteo([{ lat, lng }], Object.keys(WEATHER_VARIABLES));
+    if (!data || Date.now() - data.savedAt > 90 * 1000) {
+      const points = await fetchWeatherFromBackend([{ lat, lng }], Object.keys(WEATHER_VARIABLES));
       data = { payload: points[0], savedAt: Date.now() };
       weatherPointCache.set(cacheKey, data);
     }
     const hourly = data.payload?.hourly || {};
     const index = forecastIndexFor(hourly.time, forecastHour);
     const value = hourly[variable]?.[index];
-    if (!popup.isOpen()) return;
+    if (requestSequence !== forecastPopupSequence || !popup.isOpen()) return;
     const validTime = hourly.time?.[index] || '';
     const validDate = validTime.slice(0, 10);
     const dayValues = (hourly[variable] || []).filter((dayValue, hourIndex) => (
@@ -662,84 +933,29 @@ async function openForecastMapPopup(latlng) {
       : '<div class="fp-metric-row"><span class="fp-label">Daily min / max</span><span>Not available</span></div>';
     popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="fp-metric-row"><span class="fp-label">Variable</span><strong>${escapeHtml(config.label)}</strong></div><div class="fp-metric-row"><span class="fp-label">Current value</span><strong class="fp-val text-cyan">${escapeHtml(formatWeatherValue(variable, value))}</strong></div>${dailyRange}<div class="fp-metric-row"><span class="fp-label">Valid</span><span>${escapeHtml(validTime || 'Time unavailable')} UTC</span></div><div class="fp-metric-row"><span class="fp-label">Model</span><span>${modelLabel} · Open-Meteo</span></div></div>`);
   } catch (error) {
-    if (popup.isOpen()) popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="error">Forecast data unavailable · ${escapeHtml(error.message)}</div></div>`);
+    if (requestSequence === forecastPopupSequence && popup.isOpen()) popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="error">Forecast data unavailable · ${escapeHtml(error.message)}</div></div>`);
   }
 }
 
-function readStormAttribute(attributes, ...names) {
-  if (!attributes) return undefined;
-  for (const name of names) {
-    const key = Object.keys(attributes).find(candidate => candidate.toLowerCase() === name.toLowerCase());
-    if (key && attributes[key] !== null && attributes[key] !== '') return attributes[key];
-  }
-  return undefined;
-}
-
-function parseStormTime(value) {
-  if (value === undefined || value === null || value === '') return null;
-  if (typeof value === 'number' && value > 100000000000) return new Date(value);
-  const text = String(value);
-  if (/^\d{10,12}$/.test(text)) {
-    const normalized = text.padEnd(12, '0');
-    return new Date(Date.UTC(Number(normalized.slice(0, 4)), Number(normalized.slice(4, 6)) - 1, Number(normalized.slice(6, 8)), Number(normalized.slice(8, 10)), Number(normalized.slice(10, 12))));
-  }
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function stormPosition(feature) {
-  const geometry = feature?.geometry || {};
-  const attributes = feature?.attributes || {};
-  const lat = Number(geometry.y ?? readStormAttribute(attributes, 'LAT', 'LATITUDE'));
-  const lng = Number(geometry.x ?? readStormAttribute(attributes, 'LON', 'LONGITUDE'));
-  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
-}
-
-async function queryEsriStormLayer(layerId, where = '1=1', output = 'json') {
-  const params = new URLSearchParams({
-    where,
-    outFields: '*',
-    returnGeometry: 'true',
-    outSR: '4326',
-    f: output
-  });
-  const response = await fetch(`${ESRI_STORM_SERVICE}/${layerId}/query?${params.toString()}`, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Esri storm feed returned ${response.status}`);
-  const payload = await response.json();
-  if (payload.error) throw new Error(payload.error.message || 'Esri storm feed rejected the request');
-  return payload;
-}
-
-function latestActiveStorms(payload) {
-  const grouped = new Map();
-  (payload.features || []).forEach(feature => {
-    const attributes = feature.attributes || {};
-    const name = String(readStormAttribute(attributes, 'STORMNAME', 'NAME') || '').trim();
-    const position = stormPosition(feature);
-    if (!name || !position) return;
-    const basin = String(readStormAttribute(attributes, 'BASIN') || 'Basin unavailable');
-    const validTime = parseStormTime(readStormAttribute(attributes, 'VALIDTIME', 'ADVDATE', 'DTG', 'DATELBL'));
-    if (validTime && Date.now() - validTime.getTime() > 96 * 60 * 60 * 1000) return;
-    const key = `${name.toLowerCase()}|${basin.toLowerCase()}`;
-    const existing = grouped.get(key);
-    if (!existing || (validTime && (!existing.validTime || validTime > existing.validTime))) {
-      const maxWind = Number(readStormAttribute(attributes, 'MAXWIND', 'VMAX'));
-      const pressure = Number(readStormAttribute(attributes, 'MSLP', 'MINPRESS'));
-      grouped.set(key, {
-        name,
-        basin,
-        category: String(readStormAttribute(attributes, 'STORMTYPE', 'DVLBL') || 'Tropical cyclone'),
-        source: String(readStormAttribute(attributes, 'STORMSRC', 'SOURCE') || 'Esri · NHC/JTWC'),
-        validTime,
-        lat: position.lat,
-        lng: position.lng,
-        maxWind: Number.isFinite(maxWind) ? maxWind : null,
-        pressure: Number.isFinite(pressure) && pressure > 0 ? pressure : null,
-        attributes
-      });
-    }
-  });
-  return [...grouped.values()].sort((a, b) => (b.maxWind || 0) - (a.maxWind || 0));
+function normalizeBackendCyclone(cyclone) {
+  const latitude = cyclone?.latitude == null ? null : Number(cyclone.latitude);
+  const longitude = cyclone?.longitude == null ? null : Number(cyclone.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  const windSpeed = cyclone.windSpeed == null ? null : Number(cyclone.windSpeed);
+  const pressure = cyclone.pressure == null ? null : Number(cyclone.pressure);
+  return {
+    id: String(cyclone.id || ''),
+    name: String(cyclone.name || 'Unnamed cyclone'),
+    basin: String(cyclone.basin || 'Basin unavailable'),
+    category: String(cyclone.category || 'Tropical cyclone'),
+    source: 'NOAA',
+    validTime: cyclone.updatedAt || null,
+    lat: latitude,
+    lng: longitude,
+    maxWind: Number.isFinite(windSpeed) ? windSpeed : null,
+    pressure: Number.isFinite(pressure) ? pressure : null,
+    noaaRecord: cyclone
+  };
 }
 
 async function refreshLiveCyclones() {
@@ -748,13 +964,17 @@ async function refreshLiveCyclones() {
     status.textContent = 'Loading cyclone data…';
     status.dataset.state = 'loading';
   }
+  updateGlobalCycloneSummary();
   try {
-    const payload = await queryEsriStormLayer(1);
-    liveCyclones = latestActiveStorms(payload);
+    const payload = await requestBackendJson('/api/cyclones');
+    liveCyclones = (Array.isArray(payload.cyclones) ? payload.cyclones : [])
+      .map(normalizeBackendCyclone)
+      .filter(Boolean)
+      .sort((first, second) => (second.maxWind || 0) - (first.maxWind || 0));
     liveCycloneFeedState = 'ready';
     if (selectedLiveStorm) {
       const previousWeatherKey = weatherGridKey();
-      const selected = liveCyclones.find(storm => storm.name === selectedLiveStorm.name && storm.basin === selectedLiveStorm.basin);
+      const selected = liveCyclones.find(storm => storm.id === selectedLiveStorm.id);
       if (selected) {
         selected.liveMarker = selectedLiveStorm.liveMarker;
         selectedLiveStorm = selected;
@@ -775,7 +995,7 @@ async function refreshLiveCyclones() {
   } catch (error) {
     liveCycloneFeedState = 'error';
     if (status) {
-      status.textContent = `Live storm feed unavailable · ${error.message}`;
+      status.textContent = `NOAA/NHC feed unavailable · ${error.message}`;
       status.dataset.state = 'error';
     }
     renderLiveCycloneFeed();
@@ -786,11 +1006,13 @@ async function refreshLiveCyclones() {
 function renderLiveCycloneFeed() {
   const list = document.getElementById('liveCycloneFeedList');
   const status = document.getElementById('liveCycloneFeedStatus');
+  updateGlobalCycloneSummary();
+  syncEarthGlobe();
   if (!list) return;
   list.replaceChildren();
 
   if (liveCycloneFeedState === 'error') {
-    if (status && !status.textContent.startsWith('Live storm feed unavailable')) status.textContent = 'Live storm feed unavailable';
+    if (status && !status.textContent.startsWith('NOAA/NHC feed unavailable')) status.textContent = 'NOAA/NHC feed unavailable';
     if (status) status.dataset.state = 'error';
     const empty = document.createElement('span');
     empty.className = 'live-cyclone-empty';
@@ -801,7 +1023,7 @@ function renderLiveCycloneFeed() {
 
   if (!liveCyclones.length) {
     if (status) {
-      status.textContent = 'Esri / NHC / JTWC · no current positions reported';
+      status.textContent = 'NOAA/NHC · no current positions reported';
       status.dataset.state = 'ready';
     }
     const empty = document.createElement('span');
@@ -810,7 +1032,7 @@ function renderLiveCycloneFeed() {
     list.appendChild(empty);
   } else {
     if (status) {
-      status.textContent = `${liveCyclones.length} active position${liveCyclones.length === 1 ? '' : 's'} · Esri / NHC / JTWC`;
+      status.textContent = `${liveCyclones.length} active position${liveCyclones.length === 1 ? '' : 's'} · NOAA/NHC`;
       status.dataset.state = 'ready';
     }
     liveCyclones.forEach(storm => {
@@ -832,6 +1054,35 @@ function renderLiveCycloneFeed() {
   if (mapInstance) renderLiveCycloneMarkers();
 }
 
+function updateGlobalCycloneSummary() {
+  const summary = document.getElementById('globalCycloneSummary');
+  if (!summary) return;
+  if (liveCycloneFeedState === 'loading') {
+    summary.textContent = 'LOADING LIVE CYCLONE DATA · NOAA/NHC';
+    summary.dataset.state = 'loading';
+    return;
+  }
+  if (liveCycloneFeedState === 'error') {
+    summary.textContent = 'LIVE STORM FEED UNAVAILABLE · SCENARIO DEMO DATA ACTIVE';
+    summary.dataset.state = 'error';
+    return;
+  }
+  if (!liveCyclones.length) {
+    summary.textContent = 'NO ACTIVE NHC TROPICAL CYCLONES CURRENTLY REPORTED';
+    summary.dataset.state = 'ready';
+    return;
+  }
+  const strongest = liveCyclones.reduce((best, storm) => (storm.maxWind || 0) > (best.maxWind || 0) ? storm : best, liveCyclones[0]);
+  const strongestDetail = strongest.maxWind === null
+    ? strongest.category
+    : `${Math.round(strongest.maxWind * 1.60934)} km/h`;
+  const compact = window.matchMedia?.('(max-width: 1180px)').matches;
+  summary.textContent = compact
+    ? `${liveCyclones.length} ACTIVE NHC · STRONGEST: ${strongest.name} · ${strongestDetail}`
+    : `${liveCyclones.length} ACTIVE NHC TROPICAL CYCLONES · STRONGEST: ${strongest.name} · ${strongestDetail}`;
+  summary.dataset.state = 'ready';
+}
+
 function stormMarkerColor(storm) {
   if (storm.maxWind >= 74) return '#ef4444';
   if (storm.maxWind >= 39) return '#f59e0b';
@@ -843,13 +1094,14 @@ function renderLiveCycloneMarkers() {
   if (liveCycloneMarkerLayer) mapInstance.removeLayer(liveCycloneMarkerLayer);
   liveCycloneMarkerLayer = L.layerGroup();
   liveCyclones.forEach(storm => {
-    const marker = L.circleMarker([storm.lat, storm.lng], {
-      radius: 6,
-      color: '#ffffff',
-      weight: 1.5,
-      fillColor: stormMarkerColor(storm),
-      fillOpacity: 0.95
+    if (selectedLiveStorm?.name === storm.name && selectedLiveStorm?.basin === storm.basin) return;
+    const icon = L.divIcon({
+      className: 'live-map-storm-pin',
+      html: `<span class="live-map-storm-dot" style="--storm-tone:${stormMarkerColor(storm)}"></span><span class="live-map-storm-label"><strong>${escapeHtml(storm.name)}</strong><small>${storm.maxWind === null ? escapeHtml(storm.category) : `${Math.round(storm.maxWind * 1.60934)} km/h`}</small></span>`,
+      iconSize: [160, 34],
+      iconAnchor: [8, 17]
     });
+    const marker = L.marker([storm.lat, storm.lng], { icon, keyboard: true, title: `${storm.name} · ${storm.category}` });
     marker.bindTooltip(`${storm.name} · ${storm.category}`, { direction: 'top', className: 'hud-tooltip' });
     marker.on('click', () => selectLiveStorm(storm));
     liveCycloneMarkerLayer.addLayer(marker);
@@ -862,22 +1114,47 @@ function clearSelectedLiveStorm() {
   selectedLiveStormLayer = null;
   if (selectedLiveStorm && selectedLiveStorm.liveMarker && mapInstance) mapInstance.removeLayer(selectedLiveStorm.liveMarker);
   selectedLiveStorm = null;
+  selectedLiveGlobeTracks = null;
+  currentGlobeWeatherCells = [];
   renderLiveCycloneFeed();
 }
 
-function toGeoJSON(esriPayload) {
-  const features = (esriPayload.features || []).map(feature => {
-    const geometry = feature.geometry || {};
-    let geoGeometry = null;
-    if (Number.isFinite(geometry.x) && Number.isFinite(geometry.y)) {
-      geoGeometry = { type: 'Point', coordinates: [geometry.x, geometry.y] };
-    } else if (Array.isArray(geometry.paths)) {
-      geoGeometry = { type: geometry.paths.length > 1 ? 'MultiLineString' : 'LineString', coordinates: geometry.paths.length > 1 ? geometry.paths : geometry.paths[0] };
-    } else if (Array.isArray(geometry.rings)) {
-      geoGeometry = { type: 'Polygon', coordinates: geometry.rings };
-    }
-    return { type: 'Feature', geometry: geoGeometry, properties: feature.attributes || {} };
-  }).filter(feature => feature.geometry);
+function backendCoordinatePairs(points) {
+  return (Array.isArray(points) ? points : [])
+    .filter(point => Number.isFinite(Number(point?.latitude)) && Number.isFinite(Number(point?.longitude)))
+    .map(point => [Number(point.longitude), Number(point.latitude)]);
+}
+
+function backendTrackGeoJSON(track) {
+  const coordinates = backendCoordinatePairs(track);
+  return {
+    type: 'FeatureCollection',
+    features: coordinates.length >= 2
+      ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties: {} }]
+      : []
+  };
+}
+
+function backendLinesGeoJSON(lines) {
+  const features = (Array.isArray(lines) ? lines : []).map(line => backendCoordinatePairs(line))
+    .filter(coordinates => coordinates.length >= 2)
+    .map(coordinates => ({ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties: {} }));
+  return { type: 'FeatureCollection', features };
+}
+
+function backendConeGeoJSON(polygons) {
+  const features = (Array.isArray(polygons) ? polygons : []).map(polygon => {
+    const rings = (Array.isArray(polygon) ? polygon : []).map(backendCoordinatePairs).filter(ring => ring.length >= 4);
+    return rings.length ? { type: 'Feature', geometry: { type: 'Polygon', coordinates: rings }, properties: {} } : null;
+  }).filter(Boolean);
+  return { type: 'FeatureCollection', features };
+}
+
+function backendForecastPointsGeoJSON(points) {
+  const features = (Array.isArray(points) ? points : []).map(point => {
+    const coordinates = backendCoordinatePairs([point])[0];
+    return coordinates ? { type: 'Feature', geometry: { type: 'Point', coordinates }, properties: point } : null;
+  }).filter(Boolean);
   return { type: 'FeatureCollection', features };
 }
 
@@ -952,6 +1229,8 @@ async function selectLiveStorm(storm) {
   if (!mapInstance || !storm) return;
   clearSelectedLiveStorm();
   selectedLiveStorm = storm;
+  selectedLiveGlobeTracks = null;
+  currentGlobeWeatherCells = [];
   cancelWeatherGridRequest();
   clearWeatherGrid();
   hideScenarioMapLayersForLiveStorm();
@@ -966,23 +1245,44 @@ async function selectLiveStorm(storm) {
   mapInstance.setView([storm.lat, storm.lng], Math.max(5, mapInstance.getZoom()), { animate: true });
   updateStormIntelPanel();
   renderLiveCycloneFeed();
+  if (mapVisualizationMode === 'globe') window.VayuEarthGlobe?.focusSelected();
   if (activeWeatherVariable) loadWeatherGrid();
   updateOperationalStatus();
 
-  const where = `STORMNAME='${storm.name.replace(/'/g, "''")}' AND BASIN='${storm.basin.replace(/'/g, "''")}'`;
+  const selectedId = encodeURIComponent(storm.id);
   try {
-    const [forecastPosition, forecastTrack, observedTrack, cone] = await Promise.all([
-      queryEsriStormLayer(0, where),
-      queryEsriStormLayer(2, where),
-      queryEsriStormLayer(3, where),
-      queryEsriStormLayer(4, where)
+    const [detailPayload, forecastPayload] = await Promise.all([
+      requestBackendJson(`/api/cyclones/${selectedId}`),
+      requestBackendJson(`/api/cyclones/${selectedId}/forecast`)
     ]);
-    if (selectedLiveStorm !== storm) return;
+    if (selectedLiveStorm?.id !== storm.id) return;
+    const detailedStorm = normalizeBackendCyclone(detailPayload.cyclone);
+    if (detailedStorm) {
+      detailedStorm.liveMarker = storm.liveMarker;
+      selectedLiveStorm = detailedStorm;
+      updateStormIntelPanel();
+    }
+    const forecastPoints = (forecastPayload.forecastPoints || []).map(point => ({
+      lat: Number(point.latitude),
+      lng: Number(point.longitude),
+      hour: point.hour == null ? null : Number(point.hour),
+      wind: point.windSpeed == null ? null : Number(point.windSpeed),
+      windGust: point.windGust == null ? null : Number(point.windGust),
+      pressure: point.pressure == null ? null : Number(point.pressure),
+      validTime: point.time || null
+    })).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+    selectedLiveGlobeTracks = {
+      past: backendTrackGeoJSON(forecastPayload.track),
+      forecast: backendLinesGeoJSON(forecastPayload.forecastTrack),
+      cone: backendConeGeoJSON(forecastPayload.forecastCone),
+      forecastPoints
+    };
     selectedLiveStormLayer = L.layerGroup();
     const trackLayers = [
-      [toGeoJSON(observedTrack), { color: '#a8b5c5', weight: 2.4, opacity: 0.82, dashArray: '4 4' }],
-      [toGeoJSON(forecastTrack), { color: '#38bdf8', weight: 3, opacity: 0.92, dashArray: '7 5' }],
-      [toGeoJSON(cone), { color: '#38bdf8', weight: 1.2, fillColor: '#38bdf8', fillOpacity: 0.12 }]
+      [selectedLiveGlobeTracks.past, { color: '#a8b5c5', weight: 2.4, opacity: 0.82, dashArray: '4 4' }],
+      [selectedLiveGlobeTracks.forecast, { color: '#38bdf8', weight: 3, opacity: 0.92, dashArray: '7 5' }],
+      [selectedLiveGlobeTracks.cone, { color: '#38bdf8', weight: 1.2, fillColor: '#38bdf8', fillOpacity: 0.12 }],
+      [backendForecastPointsGeoJSON(forecastPoints), { color: '#38bdf8', weight: 1.2, fillColor: '#dffaff', fillOpacity: 0.95 }]
     ];
     trackLayers.forEach(([geojson, style]) => {
       const layer = L.geoJSON(geojson, {
@@ -992,16 +1292,15 @@ async function selectLiveStorm(storm) {
       selectedLiveStormLayer.addLayer(layer);
     });
     selectedLiveStormLayer.addTo(mapInstance);
-    const intensityPoints = (forecastPosition.features || []).map(feature => ({
-      hour: Number(readStormAttribute(feature.attributes, 'FCSTPRD', 'TAU')) || 0,
-      wind: Number(readStormAttribute(feature.attributes, 'MAXWIND', 'VMAX'))
-    }));
-    renderIntensityPlot(intensityPoints);
+    renderIntensityPlot(forecastPoints.filter(point => Number.isFinite(point.wind) && Number.isFinite(point.hour)));
+    syncEarthGlobe();
+    if (mapVisualizationMode === 'globe') window.VayuEarthGlobe?.focusSelected();
     const chartLabel = document.querySelector('.storm-intel-chart-wrap .storm-intel-section-label');
-    if (chartLabel) chartLabel.textContent = 'ESRI FORECAST WIND · MPH';
+    if (chartLabel) chartLabel.textContent = 'NOAA FORECAST WIND';
   } catch (error) {
     const classification = document.getElementById('stormDetailClassification');
     if (classification) classification.textContent = `Live position available; forecast track unavailable · ${error.message}`;
+    syncEarthGlobe();
   }
 }
 
@@ -1028,7 +1327,7 @@ function updateStormIntelPanel() {
     if (pressure) pressure.textContent = storm.pressure === null ? 'Not reported' : `${storm.pressure} hPa`;
     if (intensity) intensity.textContent = storm.category;
     if (dvorak) dvorak.textContent = 'Not supplied';
-    if (source) source.textContent = 'ESRI · LIVE';
+    if (source) source.textContent = 'NOAA · LIVE';
     if (badge) badge.textContent = 'LIVE FEED';
     if (classification) classification.textContent = 'No live AI classification is provided by this storm feed.';
     const featureLabel = document.querySelector('.storm-intel-classification .storm-intel-section-label');
@@ -1041,7 +1340,7 @@ function updateStormIntelPanel() {
       { label: 'Eye', value: 'Not supplied' }
     ]);
     if (risk) risk.textContent = 'Rapid-intensification risk: not supplied by feed';
-    if (chartLabel) chartLabel.textContent = 'ESRI FORECAST WIND · MPH';
+    if (chartLabel) chartLabel.textContent = 'NOAA FORECAST WIND';
     return;
   }
 
@@ -1143,10 +1442,16 @@ function getScenarioForecastDetails(hour) {
 
 function updatePrototypeOverlays(point) {
   clearPrototypeOverlays();
-  if (!mapInstance || selectedLiveStorm) return;
+  if (!mapInstance || selectedLiveStorm) {
+    syncEarthGlobe();
+    return;
+  }
   const scenario = SCENARIOS[currentScenarioKey];
   const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
-  if (!scenario || !point) return;
+  if (!scenario || !point) {
+    syncEarthGlobe();
+    return;
+  }
   const center = [point.lat, point.lng];
 
   if (layerVisibility.detection) {
@@ -1216,6 +1521,7 @@ function updatePrototypeOverlays(point) {
     prototypeOverlayLayers.impactZone = impactZone;
     impactZone.addTo(mapInstance);
   }
+  syncEarthGlobe();
 }
 
 // 5. Load Scenario & Render Layers
@@ -1397,7 +1703,7 @@ function updateOperationalStatus() {
   const statusEl = document.getElementById('mapOperationalStatus');
   const modeBadge = document.getElementById('topDataModeBadge');
   let mode = 'SCENARIO MODE · DEMO / FALLBACK DATA';
-  if (selectedLiveStorm) mode = `LIVE CYCLONE DATA · ESRI / NHC / JTWC · ${selectedLiveStorm.name}`;
+  if (selectedLiveStorm) mode = `LIVE CYCLONE DATA · NOAA/NHC · ${selectedLiveStorm.name}`;
   else if (activeWeatherVariable) mode = `FORECAST MODE · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'} · OPEN-METEO`;
   else if (activeSatelliteLayer !== 'dark') mode = `SATELLITE MODE · NASA GIBS · ${activeSatelliteLayer.replaceAll('-', ' ').toUpperCase()}`;
   else if (liveCycloneFeedState === 'ready' && liveCyclones.length === 0) mode = 'NO ACTIVE CYCLONES · SCENARIO / DEMO';
@@ -1823,6 +2129,7 @@ function setForecastHour(targetHour) {
   // Update pipeline flow indicator UI
   updateFlowPipeline(targetHour, pt);
   updateOperationalStatus();
+  syncEarthGlobe();
 }
 
 function updateHUD(pt) {
@@ -2827,6 +3134,10 @@ function setupEventHandlers() {
   const recenterMapBtn = document.getElementById('recenterMapBtn');
   if (recenterMapBtn) {
     recenterMapBtn.addEventListener('click', () => {
+      if (mapVisualizationMode === 'globe') {
+        window.VayuEarthGlobe?.focusSelected();
+        return;
+      }
       const marker = selectedLiveStorm?.liveMarker || mapLayers.stormMarker;
       if (mapInstance && marker) {
         const latlng = marker.getLatLng();
@@ -2991,13 +3302,27 @@ function setLayerButtonState(button, isActive) {
 }
 
 function setupMapActionHandlers() {
+  document.getElementById('mapMode2dBtn')?.addEventListener('click', () => setMapVisualizationMode('2d'));
+  document.getElementById('mapModeGlobeBtn')?.addEventListener('click', () => setMapVisualizationMode('globe'));
+  document.getElementById('earthResetBtn')?.addEventListener('click', () => window.VayuEarthGlobe?.resetView());
+  document.getElementById('earthZoomInBtn')?.addEventListener('click', () => window.VayuEarthGlobe?.zoomBy(1.2));
+  document.getElementById('earthZoomOutBtn')?.addEventListener('click', () => window.VayuEarthGlobe?.zoomBy(1 / 1.2));
+
   const worldViewBtn = document.getElementById('mapWorldViewBtn');
   if (worldViewBtn) worldViewBtn.addEventListener('click', () => {
+    if (mapVisualizationMode === 'globe') {
+      window.VayuEarthGlobe?.resetView();
+      return;
+    }
     if (mapInstance) mapInstance.fitBounds([[-55, -180], [75, 180]], { animate: true, padding: [12, 12] });
   });
 
   const locateBtn = document.getElementById('mapLocateStormBtn');
   if (locateBtn) locateBtn.addEventListener('click', () => {
+    if (mapVisualizationMode === 'globe') {
+      window.VayuEarthGlobe?.focusSelected();
+      return;
+    }
     if (!mapInstance) return;
     const target = selectedLiveStorm?.liveMarker || mapLayers.stormMarker;
     if (target) mapInstance.setView(target.getLatLng(), Math.max(7, mapInstance.getZoom()), { animate: true });
@@ -3128,6 +3453,7 @@ function applyLayerVisibility() {
   if (!mapInstance) return;
   if (selectedLiveStorm) {
     hideScenarioMapLayersForLiveStorm();
+    syncEarthGlobe();
     return;
   }
   if (mapLayers.pastTrack) {
@@ -3181,6 +3507,7 @@ function applyLayerVisibility() {
     const pt = interpolateScenarioTrack(currentForecastHour, scenario);
     updateWindRadii(pt.lat, pt.lng, pt.kts);
   }
+  syncEarthGlobe();
 }
 
 function startPlay() {

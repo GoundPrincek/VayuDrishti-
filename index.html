@@ -122,6 +122,14 @@
 
             <div class="dash-map-wrapper">
               <div id="cycloneMap"></div>
+              <div id="globeView" class="globe-view" hidden tabindex="0" role="application" aria-label="Interactive 3D Earth. Drag to rotate, scroll to zoom, and select a cyclone marker.">
+                <canvas id="globeCanvas" aria-hidden="true"></canvas>
+                <canvas id="globeOverlayCanvas" aria-hidden="true"></canvas>
+                <div id="globeStatus" class="globe-status" role="status" aria-live="polite">Preparing Earth renderer…</div>
+                <div id="globeForecastPopup" class="globe-forecast-popup" hidden></div>
+              </div>
+
+              <div id="globalCycloneSummary" class="global-cyclone-summary" role="status" aria-live="polite">Loading live storm summary…</div>
 
 
               <!-- Map Layer Toggles -->
@@ -137,7 +145,7 @@
                   <span class="layer-group-label">SATELLITE</span>
                   <label class="sr-only" for="satelliteLayerSelect">Satellite imagery layer</label>
                   <select id="satelliteLayerSelect" class="layer-select" aria-label="Satellite imagery layer">
-                    <option value="dark">Dark map</option>
+                    <option value="dark">Satellite basemap · Esri</option>
                     <option value="himawari-visible">Himawari-9 visible · 10 min</option>
                     <option value="himawari-infrared">Himawari-9 infrared · 10 min</option>
                     <option value="viirs-true-color">VIIRS true color · daily NRT</option>
@@ -176,7 +184,7 @@
                   <button id="toggleExplainabilityBtn" class="toggle-chip" type="button" aria-pressed="false" title="Show scenario explainability inputs around the selected center">Explainability inputs</button>
                   <button id="toggleImpactZoneBtn" class="toggle-chip" type="button" aria-pressed="false" title="Show the scenario gale-wind impact proxy">Impact zone proxy</button>
 
-                  <span class="layer-group-label">ACTIVE CYCLONES · ESRI / NHC / JTWC</span>
+                  <span class="layer-group-label">ACTIVE CYCLONES · NOAA / NHC</span>
                   <div id="liveCycloneFeedStatus" class="layer-data-status" aria-live="polite">Loading cyclone data…</div>
                   <div id="liveCycloneFeedList" class="live-cyclone-list" aria-label="Active cyclone list">
                     <span class="live-cyclone-empty">Checking public storm feed</span>
@@ -199,6 +207,19 @@
                 </button>
               </div>
 
+              <div id="mapModeSwitcher" class="map-mode-switcher" role="group" aria-label="Map visualization mode">
+                <button id="mapMode2dBtn" type="button" class="map-mode-option active" aria-pressed="true" title="Show the existing 2D Leaflet map">2D MAP</button>
+                <button id="mapModeGlobeBtn" type="button" class="map-mode-option" aria-pressed="false" title="Show the interactive 3D Earth">3D EARTH</button>
+              </div>
+
+              <div id="earthControlStack" class="earth-control-stack" hidden aria-label="Earth controls">
+                <button id="earthResetBtn" type="button" class="earth-reset-btn" aria-label="Reset Earth view" title="Reset Earth view">Reset Earth</button>
+                <div class="earth-zoom-controls" role="group" aria-label="Earth zoom">
+                  <button id="earthZoomInBtn" type="button" aria-label="Zoom Earth in" title="Zoom in">+</button>
+                  <button id="earthZoomOutBtn" type="button" aria-label="Zoom Earth out" title="Zoom out">−</button>
+                </div>
+              </div>
+
               <div class="map-operational-status" aria-live="polite">
                 <span class="status-mode-dot"></span>
                 <span id="mapOperationalStatus">SIMULATION MODE · DEMO DATA</span>
@@ -215,8 +236,8 @@
               </div>
 
               <div class="map-data-attribution" aria-label="Data source attribution">
-                <span><a href="https://earthdata.nasa.gov/data/tools/gibs" target="_blank" rel="noopener">NASA GIBS</a> · <a href="https://open-meteo.com/en/docs" target="_blank" rel="noopener">Open-Meteo</a> · <a href="https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/Active_Hurricanes_v1/FeatureServer" target="_blank" rel="noopener">Esri</a> · <a href="https://www.nhc.noaa.gov/" target="_blank" rel="noopener">NOAA / NHC</a> · <a href="https://www.metoc.navy.mil/jtwc/jtwc.html" target="_blank" rel="noopener">JTWC</a></span>
-                <span><a href="https://www.jma.go.jp/jma/indexe.html" target="_blank" rel="noopener">JMA (no connected feed)</a> · © CARTO / OpenStreetMap</span>
+                <span><a href="https://earthdata.nasa.gov/data/tools/gibs" target="_blank" rel="noopener">NASA GIBS imagery</a> · <a href="https://open-meteo.com/en/docs" target="_blank" rel="noopener">Open-Meteo</a> · <a href="https://www.nhc.noaa.gov/" target="_blank" rel="noopener">NOAA / NHC</a></span>
+                <span>JTWC / JMA feeds not connected · © Esri and imagery providers</span>
               </div>
 
               <!-- Map Wind Radii Legend -->
@@ -1182,6 +1203,8 @@
 
 <!-- Centralized Cyclone Mock Data Layer -->
 <script src="cycloneData.js"></script>
+<!-- Optional WebGL Earth view; Leaflet remains the primary map and fallback. -->
+<script src="earthGlobe.js"></script>
 <!-- Application JS -->
 <script src="app.js"></script>
 </body>
