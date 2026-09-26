@@ -910,7 +910,7 @@ const indexHtmlContent = `<!DOCTYPE html>
         </div>
         <div class="adv-modal-note">
           <span class="adv-note-icon">ℹ</span>
-          <span>Simulated prototype advisory preview for Smart India Hackathon 2025. Not an operational forecast.</span>
+          <span>Simulated prototype advisory preview for Smart India Hackathon 2026. Not an operational forecast.</span>
         </div>
       </div>
     </div>

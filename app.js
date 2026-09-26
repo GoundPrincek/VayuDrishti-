@@ -418,7 +418,10 @@ function weatherGridKey() {
 
 function setWeatherStatus(message) {
   const status = document.getElementById('weatherLayerStatus');
-  if (status) status.textContent = message;
+  if (status) {
+    status.textContent = message;
+    status.dataset.state = /^Loading\b/i.test(message) ? 'loading' : (/\b(unavailable|failed|error)\b/i.test(message) ? 'error' : 'ready');
+  }
 }
 
 function forecastIndexFor(times, hourOffset) {
@@ -522,7 +525,7 @@ async function loadWeatherGrid() {
   if (weatherGridRequest) weatherGridRequest.abort();
   const requestController = new AbortController();
   weatherGridRequest = requestController;
-  setWeatherStatus(`Loading ${WEATHER_VARIABLES[variable].label} grid · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'}…`);
+  setWeatherStatus(`Loading forecast · ${WEATHER_VARIABLES[variable].label} grid · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'}…`);
   updateOperationalStatus();
 
   const center = selectedLiveStorm || SCENARIOS[currentScenarioKey].forecastTrack[0];
@@ -543,7 +546,7 @@ async function loadWeatherGrid() {
     if (error.name === 'AbortError') return;
     if (weatherGridRequest !== requestController) return;
     clearWeatherGrid();
-    setWeatherStatus(`Forecast grid unavailable · ${error.message}`);
+    setWeatherStatus(`Forecast data unavailable · ${error.message}`);
     updateWeatherLegend(null);
   } finally {
     if (weatherGridRequest === requestController) {
@@ -629,12 +632,15 @@ async function openForecastMapPopup(latlng) {
   const lng = Number(latlng.lng.toFixed(3));
   const variable = activeWeatherVariable || 'wind_speed_10m';
   const config = WEATHER_VARIABLES[variable];
+  const model = activeWeatherModel;
+  const modelLabel = model === 'icon_seamless' ? 'ICON' : 'GFS';
+  const forecastHour = currentForecastHour;
   const popup = L.popup({ className: 'hud-leaflet-popup', maxWidth: 270 })
     .setLatLng(latlng)
-    .setContent(`<div class="forecast-popup-card"><div class="fp-title">MAP FORECAST · T+${currentForecastHour}H</div><div>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</div><div class="layer-data-status">Loading ${escapeHtml(config.label)} · ${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'}…</div></div>`)
+    .setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="loading">Loading forecast · ${escapeHtml(config.label)} · ${modelLabel}…</div></div>`)
     .openOn(mapInstance);
 
-  const cacheKey = `${activeWeatherModel}:${lat.toFixed(1)}:${lng.toFixed(1)}`;
+  const cacheKey = `${model}:${lat.toFixed(1)}:${lng.toFixed(1)}`;
   let data = weatherPointCache.get(cacheKey);
   try {
     if (!data || Date.now() - data.savedAt > 15 * 60 * 1000) {
@@ -643,12 +649,20 @@ async function openForecastMapPopup(latlng) {
       weatherPointCache.set(cacheKey, data);
     }
     const hourly = data.payload?.hourly || {};
-    const index = forecastIndexFor(hourly.time, currentForecastHour);
+    const index = forecastIndexFor(hourly.time, forecastHour);
     const value = hourly[variable]?.[index];
     if (!popup.isOpen()) return;
-    popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">${escapeHtml(config.label.toUpperCase())} · T+${currentForecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinate</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="fp-metric-row"><span class="fp-label">Forecast value</span><strong class="fp-val text-cyan">${escapeHtml(formatWeatherValue(variable, value))}</strong></div><div class="fp-metric-row"><span class="fp-label">Valid</span><span>${escapeHtml(hourly.time?.[index] || 'Time unavailable')} UTC</span></div><div class="fp-metric-row"><span class="fp-label">Model</span><span>${activeWeatherModel === 'icon_seamless' ? 'ICON' : 'GFS'} · Open-Meteo</span></div></div>`);
+    const validTime = hourly.time?.[index] || '';
+    const validDate = validTime.slice(0, 10);
+    const dayValues = (hourly[variable] || []).filter((dayValue, hourIndex) => (
+      hourly.time?.[hourIndex]?.slice(0, 10) === validDate && Number.isFinite(dayValue)
+    ));
+    const dailyRange = dayValues.length
+      ? `<div class="fp-metric-row"><span class="fp-label">Daily min / max</span><strong>${escapeHtml(formatWeatherValue(variable, Math.min(...dayValues)))} / ${escapeHtml(formatWeatherValue(variable, Math.max(...dayValues)))}</strong></div>`
+      : '<div class="fp-metric-row"><span class="fp-label">Daily min / max</span><span>Not available</span></div>';
+    popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="fp-metric-row"><span class="fp-label">Variable</span><strong>${escapeHtml(config.label)}</strong></div><div class="fp-metric-row"><span class="fp-label">Current value</span><strong class="fp-val text-cyan">${escapeHtml(formatWeatherValue(variable, value))}</strong></div>${dailyRange}<div class="fp-metric-row"><span class="fp-label">Valid</span><span>${escapeHtml(validTime || 'Time unavailable')} UTC</span></div><div class="fp-metric-row"><span class="fp-label">Model</span><span>${modelLabel} · Open-Meteo</span></div></div>`);
   } catch (error) {
-    if (popup.isOpen()) popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">MAP FORECAST · T+${currentForecastHour}H</div><div>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</div><div class="layer-data-status">Forecast unavailable · ${escapeHtml(error.message)}</div></div>`);
+    if (popup.isOpen()) popup.setContent(`<div class="forecast-popup-card"><div class="fp-title">FORECAST · T+${forecastHour}H</div><div class="fp-metric-row"><span class="fp-label">Coordinates</span><strong>${lat.toFixed(2)}°, ${lng.toFixed(2)}°</strong></div><div class="layer-data-status" data-state="error">Forecast data unavailable · ${escapeHtml(error.message)}</div></div>`);
   }
 }
 
@@ -730,7 +744,10 @@ function latestActiveStorms(payload) {
 
 async function refreshLiveCyclones() {
   const status = document.getElementById('liveCycloneFeedStatus');
-  if (status) status.textContent = 'Refreshing Esri active cyclone feed…';
+  if (status) {
+    status.textContent = 'Loading cyclone data…';
+    status.dataset.state = 'loading';
+  }
   try {
     const payload = await queryEsriStormLayer(1);
     liveCyclones = latestActiveStorms(payload);
@@ -757,7 +774,10 @@ async function refreshLiveCyclones() {
     updateOperationalStatus();
   } catch (error) {
     liveCycloneFeedState = 'error';
-    if (status) status.textContent = `Live feed unavailable · ${error.message}`;
+    if (status) {
+      status.textContent = `Live storm feed unavailable · ${error.message}`;
+      status.dataset.state = 'error';
+    }
     renderLiveCycloneFeed();
     updateOperationalStatus();
   }
@@ -770,22 +790,29 @@ function renderLiveCycloneFeed() {
   list.replaceChildren();
 
   if (liveCycloneFeedState === 'error') {
-    if (status && !status.textContent.startsWith('Live feed unavailable')) status.textContent = 'Live storm feed unavailable';
+    if (status && !status.textContent.startsWith('Live storm feed unavailable')) status.textContent = 'Live storm feed unavailable';
+    if (status) status.dataset.state = 'error';
     const empty = document.createElement('span');
     empty.className = 'live-cyclone-empty';
-    empty.textContent = 'Scenario fixtures remain available; live storms were not loaded.';
+    empty.textContent = 'Live storm feed unavailable · scenario demo data remains active.';
     list.appendChild(empty);
     return;
   }
 
   if (!liveCyclones.length) {
-    if (status) status.textContent = 'Esri / NHC / JTWC · no current positions reported';
+    if (status) {
+      status.textContent = 'Esri / NHC / JTWC · no current positions reported';
+      status.dataset.state = 'ready';
+    }
     const empty = document.createElement('span');
     empty.className = 'live-cyclone-empty';
     empty.textContent = 'No active cyclones in the public feed';
     list.appendChild(empty);
   } else {
-    if (status) status.textContent = `${liveCyclones.length} active position${liveCyclones.length === 1 ? '' : 's'} · Esri / NHC / JTWC`;
+    if (status) {
+      status.textContent = `${liveCyclones.length} active position${liveCyclones.length === 1 ? '' : 's'} · Esri / NHC / JTWC`;
+      status.dataset.state = 'ready';
+    }
     liveCyclones.forEach(storm => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -1021,7 +1048,7 @@ function updateStormIntelPanel() {
   const scenario = SCENARIOS[currentScenarioKey];
   const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
   if (!scenario) return;
-  const point = scenario.forecastTrack.find(item => item.hour === currentForecastHour) || scenario.forecastTrack[0];
+  const point = interpolateScenarioTrack(currentForecastHour, scenario);
   const observation = scenarioData?.observations?.[currentObsIndex] || scenarioData?.observations?.[4];
   const windKmh = Math.round((point.kts || 0) * 1.852);
   if (name) name.textContent = scenarioData?.name || scenario.name;
@@ -1055,10 +1082,49 @@ function clearPrototypeOverlays() {
   prototypeOverlayLayers = { detection: null, explainability: null, impactZone: null };
 }
 
+function interpolateScenarioTrack(hour, scenario = SCENARIOS[currentScenarioKey]) {
+  const track = scenario?.forecastTrack || [];
+  if (!track.length) return null;
+  const targetHour = Math.max(track[0].hour, Math.min(track[track.length - 1].hour, Math.round(Number(hour) || 0)));
+  const exactPoint = track.find(point => point.hour === targetHour);
+  if (exactPoint) return { ...exactPoint, hour: targetHour, interpolated: false };
+
+  const upperIndex = track.findIndex(point => point.hour > targetHour);
+  if (upperIndex <= 0) return { ...track[0], hour: track[0].hour, interpolated: false };
+  const before = track[upperIndex - 1];
+  const after = track[upperIndex];
+  const progress = (targetHour - before.hour) / (after.hour - before.hour);
+  const point = { ...before, hour: targetHour, interpolated: true };
+  ['lat', 'lng'].forEach(key => {
+    point[key] = before[key] + (after[key] - before[key]) * progress;
+  });
+  ['kts', 'hpa', 'dist', 'eye'].forEach(key => {
+    if (Number.isFinite(before[key]) && Number.isFinite(after[key])) {
+      point[key] = Math.round(before[key] + (after[key] - before[key]) * progress);
+    }
+  });
+  point.desc = progress < 0.5 ? before.desc : after.desc;
+  return point;
+}
+
+const forecastDateFormatter = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC'
+});
+const forecastTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC'
+});
+
+function formatForecastValidTime(hour) {
+  const validAt = new Date(Date.now() + Math.max(0, Number(hour) || 0) * 60 * 60 * 1000);
+  const date = forecastDateFormatter.format(validAt);
+  const time = forecastTimeFormatter.format(validAt);
+  return { iso: validAt.toISOString(), label: `${date} · ${time} UTC` };
+}
+
 function getScenarioForecastDetails(hour) {
   const scenario = SCENARIOS[currentScenarioKey];
   const scenarioData = typeof CYCLONE_SCENARIOS !== 'undefined' ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
-  const point = scenario?.forecastTrack?.find(item => item.hour === Number(hour)) || scenario?.forecastTrack?.[0];
+  const point = interpolateScenarioTrack(hour, scenario);
   if (!point) return { hour: Number(hour) || 0, windKmh: 0, confidence: 0, confidenceLabel: 'Not supplied', time: `T+${hour}h`, status: 'Forecast position unavailable', uncertainty: 'Not supplied' };
   const checkpoint = scenarioData?.forecastCheckpoints?.find(item => parseInt(item.hour, 10) === point.hour);
   const confidenceLabel = String(checkpoint?.confidence || 'Not supplied');
@@ -1070,7 +1136,7 @@ function getScenarioForecastDetails(hour) {
     confidence,
     confidenceLabel,
     time: checkpoint?.time || `T+${point.hour}h`,
-    status: checkpoint?.status || point.desc || 'Scenario forecast',
+    status: checkpoint?.status || `${point.desc || 'Scenario forecast'}${point.interpolated ? ' · interpolated from scenario points' : ''}`,
     uncertainty: checkpoint?.uncertainty || 'Not supplied'
   };
 }
@@ -1088,12 +1154,15 @@ function updatePrototypeOverlays(point) {
     const halfHeight = Math.max(0.34, (point.eye || 20) / 110);
     const halfWidth = Math.max(0.48, (point.eye || 20) / 80);
     const observation = scenarioData?.observations?.[currentObsIndex] || scenarioData?.observations?.[4];
+    const centerConfidence = CENTER_FIX_CONFIDENCE[point.hour];
+    const confidenceLabel = Number.isFinite(centerConfidence) ? `${centerConfidence}%` : 'not supplied';
+    const inputSummary = [point.eye ? 'EYE' : null, observation?.cdo ? 'CDO' : null].filter(Boolean).join(' / ');
     const bounds = [
       [center[0] - halfHeight, center[1] - halfWidth],
       [center[0] + halfHeight, center[1] + halfWidth]
     ];
     const box = L.rectangle(bounds, { color: '#48dff5', weight: 1.5, dashArray: '5 4', fillColor: '#26c6da', fillOpacity: 0.045 });
-    box.bindTooltip(`Scenario core locator · Eye ${point.eye ? `${point.eye} km` : 'not supplied'} · CDO ${observation?.cdo || 'not supplied'} · no live CV confidence`, { sticky: true });
+    box.bindTooltip(`Scenario core locator · Eye ${point.eye ? `${point.eye} km` : 'not supplied'} · CDO ${observation?.cdo || 'not supplied'} · center-fix confidence ${confidenceLabel} · no live CV inference`, { sticky: true });
     detection.addLayer(box);
     [
       bounds[0],
@@ -1108,7 +1177,7 @@ function updatePrototypeOverlays(point) {
     detection.addLayer(L.marker(center, {
       interactive: false,
       keyboard: false,
-      icon: L.divIcon({ className: 'ai-detection-label', html: '<span>CYCLONE CORE · DEMO</span>', iconSize: [136, 18], iconAnchor: [68, 29] })
+      icon: L.divIcon({ className: 'ai-detection-label', html: `<span>CORE LOCATOR · ${confidenceLabel} · DEMO</span><small>${inputSummary || 'CORE INPUTS NOT SUPPLIED'}</small>`, iconSize: [154, 30], iconAnchor: [77, 39] })
     }));
     prototypeOverlayLayers.detection = detection;
     detection.addTo(mapInstance);
@@ -1321,6 +1390,7 @@ function loadScenario(key) {
   renderObsCharts();
   renderForecastDataLayer();
   updateOperationalStatus();
+  setForecastHour(0);
 }
 
 function updateOperationalStatus() {
@@ -1333,12 +1403,12 @@ function updateOperationalStatus() {
   else if (liveCycloneFeedState === 'ready' && liveCyclones.length === 0) mode = 'NO ACTIVE CYCLONES · SCENARIO / DEMO';
   else if (activePage === 'forecast' || currentForecastHour > 0) mode = 'FORECAST MODE · SCENARIO DATA';
   else if (activePage === 'tracking') mode = 'TRACKING MODE · SCENARIO DATA';
-  if (liveCycloneFeedState === 'error' && !selectedLiveStorm && !activeWeatherVariable && activeSatelliteLayer === 'dark') mode = 'DEMO / FALLBACK DATA · LIVE FEED UNAVAILABLE';
+  if (liveCycloneFeedState === 'error' && !selectedLiveStorm && !activeWeatherVariable && activeSatelliteLayer === 'dark') mode = 'LIVE STORM FEED UNAVAILABLE · DEMO DATA ACTIVE';
   if (statusEl) statusEl.textContent = mode;
   if (statusEl) statusEl.dataset.mode = selectedLiveStorm ? 'live' : (activeWeatherVariable ? 'forecast' : (activeSatelliteLayer !== 'dark' ? 'satellite' : (liveCycloneFeedState === 'error' ? 'fallback' : 'demo')));
   document.getElementById('page-dashboard')?.classList.toggle('has-live-storm', Boolean(selectedLiveStorm));
   const timelineTitle = document.querySelector('.slider-title');
-  if (timelineTitle) timelineTitle.textContent = selectedLiveStorm ? 'Scenario timeline · live storm track shown above' : 'Forecast Track Progression:';
+  if (timelineTitle) timelineTitle.textContent = selectedLiveStorm ? 'LIVE TRACK' : 'FORECAST';
   if (selectedLiveStorm) {
     const storm = selectedLiveStorm;
     const setStatusValue = (id, value) => {
@@ -1474,13 +1544,16 @@ function renderForecastDataLayer() {
   barsEl.innerHTML = '';
   labelsEl.innerHTML = '';
   const confPts = [];
+  const activeHour = pts.reduce((closest, candidate) => (
+    Math.abs(candidate.hour - currentForecastHour) < Math.abs(closest.hour - currentForecastHour) ? candidate : closest
+  ), pts[0]).hour;
 
   pts.forEach((p, i) => {
     const cx = X_START + i * gap + gap / 2;
     const barX = cx - barW / 2;
     const barY = windY(p.windKmh);
     const barH = Y_BOT - barY;
-    const isActive = p.hour === currentForecastHour;
+    const isActive = p.hour === activeHour;
 
     // Bar
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1501,7 +1574,7 @@ function renderForecastDataLayer() {
     wLabel.setAttribute('x', cx.toFixed(1));
     wLabel.setAttribute('y', (barY - 2).toFixed(1));
     wLabel.setAttribute('text-anchor', 'middle');
-    wLabel.setAttribute('font-size', '5.5');
+    wLabel.setAttribute('font-size', '10.5');
     wLabel.setAttribute('font-family', 'monospace');
     wLabel.setAttribute('fill', isActive ? '#00f2fe' : '#64748b');
     wLabel.textContent = p.windKmh;
@@ -1512,7 +1585,7 @@ function renderForecastDataLayer() {
     xLabel.setAttribute('x', cx.toFixed(1));
     xLabel.setAttribute('y', '57');
     xLabel.setAttribute('text-anchor', 'middle');
-    xLabel.setAttribute('font-size', '6');
+    xLabel.setAttribute('font-size', '10.5');
     xLabel.setAttribute('font-family', 'monospace');
     xLabel.setAttribute('fill', isActive ? '#00f2fe' : '#475569');
     xLabel.textContent = `${p.hour}h`;
@@ -1547,7 +1620,7 @@ function renderForecastDataLayer() {
       cLabel.setAttribute('x', p.x.toFixed(1));
       cLabel.setAttribute('y', (p.y - 3).toFixed(1));
       cLabel.setAttribute('text-anchor', 'middle');
-      cLabel.setAttribute('font-size', '5');
+      cLabel.setAttribute('font-size', '10.5');
       cLabel.setAttribute('font-family', 'monospace');
       cLabel.setAttribute('fill', '#fb923c');
       cLabel.textContent = `${PROBABILISTIC_FORECAST_POINTS[i].confidence}%`;
@@ -1556,7 +1629,7 @@ function renderForecastDataLayer() {
   }
 
   // Update fc cursor
-  const activePt = confPts[pts.findIndex(p => p.hour === currentForecastHour)] || confPts[0];
+  const activePt = confPts[pts.findIndex(p => p.hour === activeHour)] || confPts[0];
   const fcCursor = document.getElementById('fcCursor');
   if (fcCursor && activePt) {
     fcCursor.setAttribute('x1', activePt.x.toFixed(1));
@@ -1654,11 +1727,8 @@ function updateWindRadii(lat, lng, kts) {
 // 7. Time Scrubber & Simulation
 function setForecastHour(targetHour) {
   const scenario = SCENARIOS[currentScenarioKey];
-  const track = scenario.forecastTrack;
-  let pt = track.find(p => p.hour === targetHour);
-  if (!pt) {
-    pt = track.reduce((prev, curr) => Math.abs(curr.hour - targetHour) < Math.abs(prev.hour - targetHour) ? curr : prev);
-  }
+  const pt = interpolateScenarioTrack(targetHour, scenario);
+  if (!pt) return;
   targetHour = pt.hour;
   currentForecastHour = targetHour;
 
@@ -1667,6 +1737,13 @@ function setForecastHour(targetHour) {
   if (timeSlider) {
     timeSlider.value = targetHour;
     timeSlider.style.setProperty('--forecast-progress', `${(targetHour / 72) * 100}%`);
+    const validTime = formatForecastValidTime(targetHour);
+    timeSlider.setAttribute('aria-valuetext', `${targetHour === 0 ? 'Now' : `Forecast hour ${targetHour}`} · ${validTime.label}`);
+    const forecastValidTime = document.getElementById('forecastValidTime');
+    if (forecastValidTime) {
+      forecastValidTime.textContent = validTime.label;
+      forecastValidTime.setAttribute('datetime', validTime.iso);
+    }
   }
 
   // Update timeline ticks active style
@@ -1677,8 +1754,7 @@ function setForecastHour(targetHour) {
   // Update scrubber header tags
   const forecastTimeTag = document.getElementById('forecastTimeTag');
   if (forecastTimeTag) {
-    const details = getScenarioForecastDetails(targetHour);
-    forecastTimeTag.textContent = targetHour === 0 ? `NOW · ${details.time}` : `T+${targetHour}h · ${details.time}`;
+    forecastTimeTag.textContent = targetHour === 0 ? 'NOW' : `T+${targetHour}h`;
     forecastTimeTag.className = `forecast-tag ${targetHour === 0 ? 'now' : (targetHour <= 24 ? 'warn' : 'past')}`;
   }
   const forecastDistanceTag = document.getElementById('forecastDistanceTag');
@@ -2618,10 +2694,14 @@ function updateInnovation3(scenario) {
 function updateForecastPointDetails(hour) {
   const p = getScenarioForecastDetails(hour);
   if (!p) return;
+  const checkpoints = SCENARIOS[currentScenarioKey]?.forecastTrack || [];
+  const selectedCheckpoint = checkpoints.reduce((closest, point) => (
+    Math.abs(point.hour - p.hour) < Math.abs(closest.hour - p.hour) ? point : closest
+  ), checkpoints[0]);
 
-  // Highlight selector chip
+  // Highlight the nearest supplied forecast checkpoint while the timeline moves between points.
   document.querySelectorAll('.fc-pt-chip').forEach(c => c.classList.remove('active'));
-  const activeChip = document.getElementById(`chip-${p.hour}`);
+  const activeChip = selectedCheckpoint ? document.getElementById(`chip-${selectedCheckpoint.hour}`) : null;
   if (activeChip) activeChip.classList.add('active');
 
   // Update Detail Card
@@ -2655,7 +2735,7 @@ function updateForecastPointDetails(hour) {
 
   // Highlight waypoint pin on map
   document.querySelectorAll('.f-pin').forEach(pin => pin.classList.remove('active'));
-  const activePin = document.getElementById(`fpin-${p.hour}`);
+  const activePin = selectedCheckpoint ? document.getElementById(`fpin-${selectedCheckpoint.hour}`) : null;
   if (activePin) activePin.classList.add('active');
 }
 
@@ -2712,23 +2792,27 @@ function setupEventHandlers() {
   if (prevHourBtn) {
     prevHourBtn.addEventListener('click', () => {
       stopPlay();
-      const hours = [0, 6, 12, 18, 24, 36, 48, 72];
-      const idx = hours.indexOf(currentForecastHour);
-      const prev = idx > 0 ? hours[idx - 1] : hours[0];
-      setForecastHour(prev);
+      setForecastHour(currentForecastHour - 1);
     });
   }
+  const prev24HourBtn = document.getElementById('prev24HourBtn');
+  if (prev24HourBtn) prev24HourBtn.addEventListener('click', () => {
+    stopPlay();
+    setForecastHour(currentForecastHour - 24);
+  });
 
   const nextHourBtn = document.getElementById('nextHourBtn');
   if (nextHourBtn) {
     nextHourBtn.addEventListener('click', () => {
       stopPlay();
-      const hours = [0, 6, 12, 18, 24, 36, 48, 72];
-      const idx = hours.indexOf(currentForecastHour);
-      const next = idx < hours.length - 1 ? hours[idx + 1] : hours[hours.length - 1];
-      setForecastHour(next);
+      setForecastHour(currentForecastHour + 1);
     });
   }
+  const next24HourBtn = document.getElementById('next24HourBtn');
+  if (next24HourBtn) next24HourBtn.addEventListener('click', () => {
+    stopPlay();
+    setForecastHour(currentForecastHour + 24);
+  });
 
   // Reset to NOW (T+0)
   const resetTrackBtn = document.getElementById('resetTrackBtn');
@@ -2840,7 +2924,7 @@ function setupEventHandlers() {
       layerVisibility[layerKey] = !layerVisibility[layerKey];
       setLayerButtonState(event.currentTarget, layerVisibility[layerKey]);
       const scenario = SCENARIOS[currentScenarioKey];
-      const point = scenario.forecastTrack.find(item => item.hour === currentForecastHour) || scenario.forecastTrack[0];
+      const point = interpolateScenarioTrack(currentForecastHour, scenario);
       updatePrototypeOverlays(point);
     });
   });
@@ -2920,15 +3004,30 @@ function setupMapActionHandlers() {
   });
 
   const refreshBtn = document.getElementById('mapRefreshBtn');
-  if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    stopDemo();
-    stopPlay();
-    stopObsPlay();
-    refreshLiveCyclones();
-    if (!selectedLiveStorm) loadScenario(currentScenarioKey);
-    else updateOperationalStatus();
-    if (activeWeatherVariable) loadWeatherGrid();
-    if (mapInstance) mapInstance.invalidateSize();
+  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
+    if (refreshBtn.disabled) return;
+    refreshBtn.disabled = true;
+    refreshBtn.classList.add('is-refreshing');
+    refreshBtn.setAttribute('aria-busy', 'true');
+    refreshBtn.setAttribute('aria-label', 'Refreshing live cyclone feed and map data');
+    refreshBtn.title = 'Refreshing live cyclone feed and map data';
+    try {
+      stopDemo();
+      stopPlay();
+      stopObsPlay();
+      const cycloneRefresh = refreshLiveCyclones();
+      if (!selectedLiveStorm) loadScenario(currentScenarioKey);
+      else updateOperationalStatus();
+      if (activeWeatherVariable) loadWeatherGrid();
+      if (mapInstance) mapInstance.invalidateSize();
+      await cycloneRefresh;
+    } finally {
+      refreshBtn.disabled = false;
+      refreshBtn.classList.remove('is-refreshing');
+      refreshBtn.removeAttribute('aria-busy');
+      refreshBtn.setAttribute('aria-label', 'Refresh map data');
+      refreshBtn.title = 'Refresh live cyclone feed and map data';
+    }
   });
 
   const fullscreenBtn = document.getElementById('mapFullscreenBtn');
@@ -3079,25 +3178,37 @@ function applyLayerVisibility() {
     if (mapLayers.radii34) mapInstance.removeLayer(mapLayers.radii34);
   } else {
     const scenario = SCENARIOS[currentScenarioKey];
-    let pt = scenario.forecastTrack.find(p => p.hour === currentForecastHour) || scenario.forecastTrack[0];
+    const pt = interpolateScenarioTrack(currentForecastHour, scenario);
     updateWindRadii(pt.lat, pt.lng, pt.kts);
   }
 }
 
 function startPlay() {
+  if (playInterval) return;
   isPlaying = true;
-  document.getElementById('playBtn').textContent = '❚❚';
+  const playBtn = document.getElementById('playBtn');
+  if (playBtn) {
+    playBtn.textContent = '❚❚';
+    playBtn.setAttribute('aria-label', 'Pause forecast');
+    playBtn.setAttribute('aria-pressed', 'true');
+    playBtn.title = 'Pause forecast';
+  }
   playInterval = setInterval(() => {
     const forecastHours = SCENARIOS[currentScenarioKey].forecastTrack.map(point => point.hour);
-    const currentIndex = forecastHours.indexOf(currentForecastHour);
-    const nextIndex = currentIndex < 0 || currentIndex === forecastHours.length - 1 ? 0 : currentIndex + 1;
-    setForecastHour(forecastHours[nextIndex]);
+    const nextHour = forecastHours.find(hour => hour > currentForecastHour);
+    setForecastHour(nextHour ?? 0);
   }, 1400);
 }
 
 function stopPlay() {
   isPlaying = false;
-  document.getElementById('playBtn').textContent = '▶';
+  const playBtn = document.getElementById('playBtn');
+  if (playBtn) {
+    playBtn.textContent = '▶';
+    playBtn.setAttribute('aria-label', 'Play forecast');
+    playBtn.setAttribute('aria-pressed', 'false');
+    playBtn.title = 'Play forecast';
+  }
   if (playInterval) {
     clearInterval(playInterval);
     playInterval = null;
@@ -3105,7 +3216,7 @@ function stopPlay() {
 }
 
 function startClock() {
-  setInterval(() => {
+  const updateClock = () => {
     const now = new Date();
     const utcHours = String(now.getUTCHours()).padStart(2, '0');
     const utcMins = String(now.getUTCMinutes()).padStart(2, '0');
@@ -3113,7 +3224,19 @@ function startClock() {
     if (clockEl) {
       clockEl.textContent = `UTC ${utcHours}:${utcMins}`;
     }
-  }, 1000);
+    if (currentForecastHour === 0) {
+      const validTime = formatForecastValidTime(0);
+      const forecastValidTime = document.getElementById('forecastValidTime');
+      const timeSlider = document.getElementById('timeSlider');
+      if (forecastValidTime) {
+        forecastValidTime.textContent = validTime.label;
+        forecastValidTime.setAttribute('datetime', validTime.iso);
+      }
+      if (timeSlider) timeSlider.setAttribute('aria-valuetext', `Now · ${validTime.label}`);
+    }
+    setTimeout(updateClock, 60000 - (Date.now() % 60000));
+  };
+  updateClock();
 }
 
 // ==========================================================================
@@ -3740,7 +3863,7 @@ function exportAdvisoryPreview() {
   
   doc.setFontSize(10);
   doc.setTextColor(150, 150, 150);
-  doc.text("END OF REPORT - SIMULATED PROTOTYPE (SIH 2025)", 40, 250);
+  doc.text("END OF REPORT - SIMULATED PROTOTYPE (SIH 2026)", 40, 250);
   doc.text("Page 5 of 5", 500, 800);
   
   doc.save(`VayuDrishti_Advisory_Preview_${Date.now()}.pdf`);
@@ -4045,32 +4168,38 @@ function populateTrackingPage() {
 // ----- FORECAST PAGE -----
 function populateForecastPage() {
   const scenarioData = (typeof CYCLONE_SCENARIOS !== 'undefined') ? CYCLONE_SCENARIOS[currentScenarioKey] : null;
+  const scenario = SCENARIOS[currentScenarioKey];
   const tbody = document.getElementById('fc-table-body');
   if (tbody) {
     tbody.innerHTML = '';
-    const pts = scenarioData?.forecastCheckpoints || PROBABILISTIC_FORECAST_POINTS;
+    const scenarioCheckpoints = scenarioData?.forecastCheckpoints;
+    const pts = scenarioCheckpoints?.length ? scenarioCheckpoints : PROBABILISTIC_FORECAST_POINTS;
     pts.forEach(p => {
       const tr = document.createElement('tr');
-      if (p.hour !== undefined) {
-        // PROBABILISTIC_FORECAST_POINTS style
-        tr.innerHTML = `
-          <td>T+${p.hour}h</td>
-          <td>${p.lat}°N, ${p.lng}°E</td>
-          <td>${p.windKmh} km/h</td>
-          <td>${p.hour === 0 ? 958 : (958 + p.hour / 2)} hPa</td>
-          <td class="text-${p.confidence > 80 ? 'green' : (p.confidence > 60 ? 'yellow' : 'red')}">${p.confidence}%</td>
-        `;
-      } else {
-        // CYCLONE_SCENARIOS forecastCheckpoints style
-        const confClass = p.confidence === 'High' ? 'text-green' : (p.confidence === 'Moderate' ? 'text-yellow' : 'text-red');
-        tr.innerHTML = `
-          <td>T+${p.hour}</td>
-          <td>${p.location}</td>
-          <td>${p.intensityKmh} km/h</td>
-          <td>-</td>
-          <td class="${confClass}">${p.confidence}</td>
-        `;
-      }
+      const hour = Number.parseInt(String(p.hour ?? 0), 10) || 0;
+      const trackPoint = interpolateScenarioTrack(hour, scenario);
+      const windKmh = Number.isFinite(Number(p.windKmh))
+        ? Number(p.windKmh)
+        : (Number.isFinite(Number(p.intensityKmh)) ? Number(p.intensityKmh) : Math.round((trackPoint?.kts || 0) * 1.852));
+      const pressureHpa = Number.isFinite(Number(p.pressureHpa))
+        ? Number(p.pressureHpa)
+        : (Number.isFinite(Number(trackPoint?.hpa)) ? Number(trackPoint.hpa) : null);
+      const location = p.location || (Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng))
+        ? `${p.lat}°N, ${p.lng}°E`
+        : `${trackPoint?.lat?.toFixed(1) ?? '—'}°N, ${trackPoint?.lng?.toFixed(1) ?? '—'}°E`);
+      const confidence = p.confidence ?? 'Not supplied';
+      const confidenceValue = Number(confidence);
+      const confidenceClass = Number.isFinite(confidenceValue)
+        ? (confidenceValue > 80 ? 'text-green' : (confidenceValue > 60 ? 'text-yellow' : 'text-red'))
+        : (/high/i.test(String(confidence)) ? 'text-green' : (/moderate/i.test(String(confidence)) ? 'text-yellow' : 'text-red'));
+      const confidenceText = Number.isFinite(confidenceValue) ? `${confidenceValue}%` : String(confidence);
+      tr.innerHTML = `
+        <td data-label="Time">T+${hour}h</td>
+        <td data-label="Location">${location}</td>
+        <td data-label="Intensity">${windKmh} km/h</td>
+        <td data-label="Pressure">${pressureHpa === null ? '—' : `${pressureHpa} hPa`}</td>
+        <td data-label="Confidence" class="${confidenceClass}">${confidenceText}</td>
+      `;
       tbody.appendChild(tr);
     });
   }
